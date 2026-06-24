@@ -1,0 +1,173 @@
+// ============================================================================
+//  PhysicsList.cc  —  Fixed for Geant4 11.x API
+// ============================================================================
+
+#include "PhysicsList.hh"
+
+#include "G4EmStandardPhysics_option4.hh"
+#include "G4EmExtraPhysics.hh"
+
+#include "G4OpticalPhysics.hh"
+#include "G4OpticalParameters.hh"
+
+#include "G4DecayPhysics.hh"
+#include "G4RadioactiveDecayPhysics.hh"
+#include "G4HadronElasticPhysicsHP.hh"
+#include "G4HadronPhysicsQGSP_BERT_HP.hh"
+#include "G4StoppingPhysics.hh"
+#include "G4IonPhysics.hh"
+#include "G4NeutronTrackingCut.hh"
+
+#include "G4SystemOfUnits.hh"
+
+PhysicsList::PhysicsList()
+  : G4VModularPhysicsList(), fCutValue(0.1*mm)
+{
+  SetVerboseLevel(0);
+
+  RegisterPhysics(new G4DecayPhysics());
+  RegisterPhysics(new G4RadioactiveDecayPhysics());
+  RegisterPhysics(new G4EmStandardPhysics_option4());
+  RegisterPhysics(new G4EmExtraPhysics());
+
+  // ── Optical physics ────────────────────────────────────────────────────────
+  auto* opticalPhysics = new G4OpticalPhysics();
+  auto* optParams      = G4OpticalParameters::Instance();
+
+  // Cherenkov
+  optParams->SetCerenkovMaxPhotonsPerStep(300);
+  optParams->SetCerenkovMaxBetaChange(10.0);
+  optParams->SetCerenkovTrackSecondariesFirst(true);
+
+  // Scintillation — Geant4 11.x renamed API
+  optParams->SetScintByParticleType(false);       // was SetScintillationByParticleType
+  optParams->SetScintTrackInfo(true);              // was SetScintillationTrackInfo
+  optParams->SetScintStackPhotons(true);           // was SetScintillationStackPhotons
+  optParams->SetScintFiniteRiseTime(false);  // rise time props removed to avoid crash         // was SetFiniteRiseTime
+
+  // Verbosity — Geant4 11.x renamed API
+  optParams->SetAbsorptionVerboseLevel(0);         // was SetAbsorptionVerbosity
+  optParams->SetRayleighVerboseLevel(0);           // was SetRayleighVerbosity
+  optParams->SetBoundaryVerboseLevel(0);           // was SetBoundaryVerbosity
+
+  // WLS time profiles
+  optParams->SetWLSTimeProfile("delta");
+  optParams->SetWLS2TimeProfile("exponential");
+
+  RegisterPhysics(opticalPhysics);
+
+  // ── Hadronic ───────────────────────────────────────────────────────────────
+  RegisterPhysics(new G4HadronElasticPhysicsHP());
+  RegisterPhysics(new G4HadronPhysicsQGSP_BERT_HP());
+  RegisterPhysics(new G4StoppingPhysics());
+  RegisterPhysics(new G4IonPhysics());
+  RegisterPhysics(new G4NeutronTrackingCut());
+}
+
+PhysicsList::~PhysicsList() = default;
+
+void PhysicsList::ConstructParticle() { G4VModularPhysicsList::ConstructParticle(); }
+void PhysicsList::ConstructProcess()  { G4VModularPhysicsList::ConstructProcess();  }
+
+void PhysicsList::SetCuts()
+{
+  SetCutValue(fCutValue, "gamma");
+  SetCutValue(fCutValue, "e-");
+  SetCutValue(fCutValue, "e+");
+  SetCutValue(fCutValue, "proton");
+}
+
+/*
+// ============================================================================
+//  PhysicsList.cc
+//  Full optical + EM + hadronic physics for neutrino detector simulation
+// ============================================================================
+
+#include "PhysicsList.hh"
+
+// EM
+#include "G4EmStandardPhysics_option4.hh"
+#include "G4EmExtraPhysics.hh"
+
+// Optical
+#include "G4OpticalPhysics.hh"
+#include "G4OpticalParameters.hh"
+
+// Hadronic
+#include "G4DecayPhysics.hh"
+#include "G4RadioactiveDecayPhysics.hh"
+#include "G4HadronElasticPhysicsHP.hh"
+#include "G4HadronPhysicsQGSP_BERT_HP.hh"
+#include "G4StoppingPhysics.hh"
+#include "G4IonPhysics.hh"
+#include "G4NeutronTrackingCut.hh"
+
+// General
+#include "G4SystemOfUnits.hh"
+#include "G4UnitsTable.hh"
+#include "G4LossTableManager.hh"
+#include "G4ProcessManager.hh"
+#include "G4ParticleTable.hh"
+#include "G4Gamma.hh"
+#include "G4Electron.hh"
+#include "G4Positron.hh"
+#include "G4Proton.hh"
+
+
+PhysicsList::PhysicsList()
+  : G4VModularPhysicsList(), fCutValue(0.1*mm)
+{
+  SetVerboseLevel(0);
+ 
+  RegisterPhysics(new G4DecayPhysics());
+  RegisterPhysics(new G4RadioactiveDecayPhysics());
+  RegisterPhysics(new G4EmStandardPhysics_option4());
+  RegisterPhysics(new G4EmExtraPhysics());
+ 
+  // ── Optical physics ────────────────────────────────────────────────────────
+  auto* opticalPhysics = new G4OpticalPhysics();
+  auto* optParams      = G4OpticalParameters::Instance();
+ 
+  // Cherenkov
+  optParams->SetCerenkovMaxPhotonsPerStep(300);
+  optParams->SetCerenkovMaxBetaChange(10.0);
+  optParams->SetCerenkovTrackSecondariesFirst(true);
+ 
+  // Scintillation — Geant4 11.x renamed API
+  optParams->SetScintByParticleType(false);       // was SetScintillationByParticleType
+  optParams->SetScintTrackInfo(true);              // was SetScintillationTrackInfo
+  optParams->SetScintStackPhotons(true);           // was SetScintillationStackPhotons
+  optParams->SetScintFiniteRiseTime(true);         // was SetFiniteRiseTime
+ 
+  // Verbosity — Geant4 11.x renamed API
+  optParams->SetAbsorptionVerboseLevel(0);         // was SetAbsorptionVerbosity
+  optParams->SetRayleighVerboseLevel(0);           // was SetRayleighVerbosity
+  optParams->SetBoundaryVerboseLevel(0);           // was SetBoundaryVerbosity
+ 
+  // WLS time profiles
+  optParams->SetWLSTimeProfile("delta");
+  optParams->SetWLS2TimeProfile("exponential");
+ 
+  RegisterPhysics(opticalPhysics);
+ 
+  // ── Hadronic ───────────────────────────────────────────────────────────────
+  RegisterPhysics(new G4HadronElasticPhysicsHP());
+  RegisterPhysics(new G4HadronPhysicsQGSP_BERT_HP());
+  RegisterPhysics(new G4StoppingPhysics());
+  RegisterPhysics(new G4IonPhysics());
+  RegisterPhysics(new G4NeutronTrackingCut());
+}
+
+PhysicsList::~PhysicsList() = default;
+ 
+void PhysicsList::ConstructParticle() { G4VModularPhysicsList::ConstructParticle(); }
+void PhysicsList::ConstructProcess()  { G4VModularPhysicsList::ConstructProcess();  }
+ 
+void PhysicsList::SetCuts()
+{
+  SetCutValue(fCutValue, "gamma");
+  SetCutValue(fCutValue, "e-");
+  SetCutValue(fCutValue, "e+");
+  SetCutValue(fCutValue, "proton");
+}
+*/ 

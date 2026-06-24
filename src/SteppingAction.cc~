@@ -1,0 +1,74 @@
+// ============================================================================
+//  SteppingAction.cc
+//  Counts optical photon production at each step, tags process origin.
+//  PPO direct emission (fast) and bis-MSB WLS emission (slow) are both
+//  captured here via process name tagging.
+// ============================================================================
+
+#include "SteppingAction.hh"
+#include "RunAction.hh"
+#include "DetectorConstruction.hh"
+
+#include "G4VProcess.hh"     
+#include "G4Step.hh"
+#include "G4Track.hh"
+#include "G4OpticalPhoton.hh"
+#include "G4VProcess.hh"
+#include "G4ProcessManager.hh"
+#include "G4SystemOfUnits.hh"
+
+
+
+SteppingAction::SteppingAction(RunAction* ra, DetectorConstruction* det)
+  : G4UserSteppingAction(), fRunAction(ra), fDetector(det) {}
+ 
+void SteppingAction::UserSteppingAction(const G4Step* step)
+{
+  // Geant4 11.x: GetSecondaryInCurrentStep() returns
+  //   const std::vector<const G4Track*>*   (not G4TrackVector*)
+  const std::vector<const G4Track*>* secondaries =
+      step->GetSecondaryInCurrentStep();
+  if (!secondaries) return;
+ 
+  for (const G4Track* sec : *secondaries) {
+    if (sec->GetDefinition() != G4OpticalPhoton::OpticalPhotonDefinition())
+      continue;
+ 
+    const G4VProcess* proc = sec->GetCreatorProcess();
+    G4String procName = proc ? proc->GetProcessName() : "unknown";
+ 
+    G4bool isScint    = (procName == "Scintillation");
+    G4bool isCerenkov = (procName == "Cerenkov");
+    G4bool isWLS      = (procName.find("OpWLS") != G4String::npos);
+ 
+    fRunAction->AddPhotonProduced(isScint || isWLS, isCerenkov);
+  }
+}
+
+/*
+
+SteppingAction::SteppingAction(RunAction* ra, DetectorConstruction* det)
+  : G4UserSteppingAction(), fRunAction(ra), fDetector(det) {}
+
+void SteppingAction::UserSteppingAction(const G4Step* step)
+{
+  // ── Count secondary optical photons produced at this step ─────────────────
+  const G4TrackVector* secondaries = step->GetSecondaryInCurrentStep();
+  if (!secondaries) return;
+
+  for (const auto* sec : *secondaries) {
+    if (sec->GetDefinition() != G4OpticalPhoton::OpticalPhotonDefinition())
+      continue;
+
+    const G4VProcess* proc = sec->GetCreatorProcess();
+    G4String procName = proc ? proc->GetProcessName() : "unknown";
+
+    G4bool isScint    = (procName == "Scintillation");
+    G4bool isCerenkov = (procName == "Cerenkov");
+    // WLS photons are secondaries of OpWLS/OpWLS2 – count as scintillation-like
+    G4bool isWLS      = (procName.find("OpWLS") != G4String::npos);
+
+    fRunAction->AddPhotonProduced(isScint || isWLS, isCerenkov);
+  }
+}
+*/

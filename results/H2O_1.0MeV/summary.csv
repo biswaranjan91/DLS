@@ -1,0 +1,16 @@
+# NeutrinoDetSim run summary
+medium,H2O
+primary_energy_MeV,1.000
+n_events,1000
+total_produced,101087
+scint_produced,0
+cerenkov_produced,101087
+total_detected,4959
+scint_detected,0
+cerenkov_detected,4959
+wls_detected,0
+detection_efficiency,0.049057
+scint_fraction_produced,0.000000
+cerenkov_fraction_produced,1.000000
+mean_produced_per_event,101.087000
+mean_detected_per_event,4.959000

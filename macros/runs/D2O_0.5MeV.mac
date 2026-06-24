@@ -1,0 +1,10 @@
+# Standalone: D2O @ 0.5 MeV
+# Usage: ./build/NeutrinoDetSim macros/runs/D2O_0.5MeV.mac
+/run/verbose 0
+/event/verbose 0
+/tracking/verbose 0
+/det/medium D2O
+/run/initialize
+/gun/particle e-
+/gun/energy 0.5 MeV
+/run/beamOn 1000

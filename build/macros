@@ -1,0 +1,19 @@
+# ============================================================================
+#  run_medium.mac  –  Template macro for one medium + one energy
+#  Parameters are passed as aliased strings from run_all.mac
+#  Usage (direct): ./NeutrinoDetSim macros/run_single.mac
+#                  (with aliases set externally)
+# ============================================================================
+
+# Set medium (reinitialises geometry)
+/det/medium {MEDIUM}
+
+# Re-initialise run (required after geometry change)
+/run/initialize
+
+# Set primary particle
+/gun/particle e-
+/gun/energy {ENERGY} MeV
+
+# Number of events: 1000 (increase to 10000 for publication quality)
+/run/beamOn 1000

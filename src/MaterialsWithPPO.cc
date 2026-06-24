@@ -1,0 +1,1531 @@
+// ============================================================================
+//  MaterialsWithPPO.cc
+//
+//  PPO + bis-MSB (b-MIS) fluor/WLS optical property tables.
+//
+//  References:
+//   [1] Yeh et al., NIM A 660 (2011) 51 – WbLS development
+//   [2] Aberle et al., JINST 7 (2012) E06008 – WbLS optical characterisation
+//   [3] Biller et al., JINST 15 (2020) P09016 – bis-MSB WLS in WbLS
+//   [4] Smirnov, Phys.Part.Nucl. 43 (2012) – LAB scintillator review
+//   [5] Caravaca et al., EPJC 80 (2020) – light yield model
+//   [6] SNO+ TDR (2015) – LAB + PPO + bis-MSB baseline
+//
+//  PPO (2,5-diphenyloxazole):
+//    MW = 221.26 g/mol,  peak absorption ~305 nm (4.07 eV)
+//    peak emission  ~360 nm (3.44 eV),  Stokes shift ~55 nm
+//    quantum yield  ~0.80 in LAB/toluene
+//    decay time     ~1.4 ns (fast component → FASTCOMPONENT in G4)
+//
+//  bis-MSB (1,4-bis(2-methylstyryl)benzene):
+//    MW = 310.41 g/mol,  peak absorption ~368 nm (3.37 eV)
+//    peak emission  ~420 nm (2.95 eV),  Stokes shift ~52 nm
+//    quantum yield  ~0.90 in LAB
+//    decay time     ~1.5 ns (prompt WLS → WLSCOMPONENT in G4, "delta" profile)
+//    acts as secondary shifter: absorbs PPO emission, re-emits blue-shifted
+//    into PMT peak sensitivity window (~420 nm)
+//
+// 
+//  Rise time values per medium (physically motivated):
+//    PPO Forster transfer from LAB: ~0.5 ns (fast, well-measured in LAB, Aberle 2012)
+//    bis-MSB WLS re-emission delay: ~1.5 ns (WLS transfer + emission, Biller 2020)
+//    D2O solvent: slightly slower due to reduced vibrational coupling → 0.6/1.8 ns
+//    Te loaded: slightly heavier nuclear environment → 0.6/2.0 ns
+//
+//
+//  In Geant4, this two-component system maps to:
+//    FASTCOMPONENT  → PPO direct emission (tau ~ 2 ns + 1 ns rise)
+//    SLOWCOMPONENT  → bis-MSB re-emission  (tau ~ 12 ns including WLS transfer)
+//    WLSABSLENGTH   → PPO absorption in solvent (photons absorbed then re-emitted
+//                     as WLSCOMPONENT via bis-MSB)
+//    WLS2ABSLENGTH  → bis-MSB absorption of residual PPO photons
+//    WLSCOMPONENT   → bis-MSB emission spectrum
+// ============================================================================
+
+#include "MaterialsWithPPO.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include <cmath>
+#include <algorithm>
+#include <numeric>
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  25-point photon energy grid: 2.00 – 4.70 eV  (264 – 620 nm)
+// ─────────────────────────────────────────────────────────────────────────────
+const G4double MaterialsWithPPO::kE[kNE] = {
+  2.00*eV, 2.14*eV, 2.30*eV, 2.48*eV, 2.58*eV,
+  2.70*eV, 2.82*eV, 2.95*eV, 3.06*eV, 3.18*eV,
+  3.26*eV, 3.35*eV, 3.44*eV, 3.54*eV, 3.65*eV,
+  3.76*eV, 3.87*eV, 3.97*eV, 4.07*eV, 4.13*eV,
+  4.20*eV, 4.28*eV, 4.36*eV, 4.50*eV, 4.70*eV
+  //620nm   580nm   539nm   500nm   480nm
+  //459nm   440nm   420nm   405nm   390nm
+  //380nm   370nm   360nm   350nm   340nm
+  //330nm   320nm   312nm   305nm   300nm
+  //295nm   290nm   284nm   276nm   264nm
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PPO emission spectrum (FAST component)
+//  Peak at ~360 nm (3.44 eV). Measured in LAB, from Aberle et al. 2012.
+//  Normalised so max = 1.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetPPOEmissionSpectrum(G4double* s)
+{
+  //  index:  0     1     2     3     4
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  //  index:  5     6     7     8     9
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.002; s[ 8] = 0.010; s[ 9] = 0.040;
+  //  index: 10    11    12    13    14
+  s[10] = 0.100; s[11] = 0.280; s[12] = 1.000; s[13] = 0.860; s[14] = 0.520;
+  //  index: 15    16    17    18    19
+  s[15] = 0.240; s[16] = 0.095; s[17] = 0.030; s[18] = 0.008; s[19] = 0.002;
+  //  index: 20    21    22    23    24
+  s[20] = 0.000; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  bis-MSB emission spectrum (SLOW / WLS component)
+//  Peak at ~420 nm (2.95 eV).  Measured in LAB, from Biller et al. 2020.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetBisMSBEmissionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.002; s[ 4] = 0.008;
+  s[ 5] = 0.025; s[ 6] = 0.090; s[ 7] = 1.000; s[ 8] = 0.950; s[ 9] = 0.740;
+  s[10] = 0.520; s[11] = 0.310; s[12] = 0.130; s[13] = 0.040; s[14] = 0.010;
+  s[15] = 0.002; s[16] = 0.000; s[17] = 0.000; s[18] = 0.000; s[19] = 0.000;
+  s[20] = 0.000; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PPO absorption spectrum (for WLS mean-free-path)
+//  Peak at ~305 nm (4.07 eV). Normalised.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetPPOAbsorptionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.000; s[ 8] = 0.000; s[ 9] = 0.000;
+  s[10] = 0.002; s[11] = 0.010; s[12] = 0.040; s[13] = 0.120; s[14] = 0.280;
+  s[15] = 0.520; s[16] = 0.820; s[17] = 0.950; s[18] = 1.000; s[19] = 0.980;
+  s[20] = 0.900; s[21] = 0.700; s[22] = 0.400; s[23] = 0.120; s[24] = 0.020;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  bis-MSB absorption spectrum (for WLS2 mean-free-path)
+//  Peak at ~368 nm (3.37 eV). Normalised.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetBisMSBAbsorptionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.000; s[ 8] = 0.000; s[ 9] = 0.002;
+  s[10] = 0.010; s[11] = 0.080; s[12] = 0.350; s[13] = 0.780; s[14] = 1.000;
+  s[15] = 0.920; s[16] = 0.620; s[17] = 0.300; s[18] = 0.080; s[19] = 0.020;
+  s[20] = 0.005; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Effective yield model
+//  Based on Caravaca et al. EPJC 80 (2020):
+//    Y_eff = Y_LAB × f_LAB × η_PPO × η_WLS
+//  where:
+//    Y_LAB   ≈ 15,000 ph/MeV (pure LAB+PPO)
+//    f_LAB   = LAB volume fraction in solvent mixture
+//    η_PPO   = PPO transfer efficiency (saturates > 1.5 g/L, ~0.95-0.99)
+//    η_WLS   = bis-MSB Förster transfer efficiency (~0.90-0.97 at 0.05 g/L)
+// ─────────────────────────────────────────────────────────────────────────────
+G4double MaterialsWithPPO::ComputeEffectiveYield(G4double ppoConcGperL,
+                                                  G4double bisMSBConcGperL,
+                                                  G4double labFraction,
+                                                  G4double wlsTransferEff)
+{
+  constexpr G4double kBaseLABYield = 15000.; // ph/MeV for pure LAB+PPO at 3 g/L
+
+  // PPO efficiency: Förster transfer from LAB to PPO
+  // Saturates at ~2 g/L; parametrised as simple saturation function
+  G4double etaPPO = (ppoConcGperL > 0.)
+    ? ppoConcGperL / (ppoConcGperL + 0.4)   // 0.4 g/L half-saturation
+    : 0.0;
+  etaPPO = std::min(etaPPO, 0.99);
+
+  // bis-MSB WLS efficiency: depends on concentration and overlap integral
+  G4double etaWLS = (bisMSBConcGperL > 0.)
+    ? wlsTransferEff * (1.0 - std::exp(-bisMSBConcGperL / 0.02))
+    : 0.0;
+  etaWLS = std::min(etaWLS, 0.97);
+
+  G4double yield = kBaseLABYield * labFraction * etaPPO * etaWLS;
+  return yield / MeV;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Internal: Apply scaled WLS absorption lengths + emission spectra to MPT
+//
+//  WLSABSLENGTH  = PPO absorption length as function of energy
+//  WLS2ABSLENGTH = bis-MSB absorption length as function of energy
+//  WLSCOMPONENT  = bis-MSB emission spectrum (primary output of WLS chain)
+//  WLS2COMPONENT = PPO direct emission (residual, for completeness)
+//
+//  Absorption length L(E) = L_ref / (C / C_ref) / σ_norm(E)
+//    where σ_norm is the normalised cross section at energy E.
+//    A floor is set at 1e6 m (transparent) to avoid zero.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::ApplyWLSProperties(G4MaterialPropertiesTable* mpt,
+                                           G4double ppoConcGperL,
+                                           G4double bisMSBConcGperL,
+                                           G4double solventScintYield)
+{
+  G4double ppoCrossSection[kNE], bisMSBCrossSection[kNE];
+  G4double ppoEmit[kNE],         bisMSBEmit[kNE];
+
+  GetPPOAbsorptionSpectrum   (ppoCrossSection);
+  GetBisMSBAbsorptionSpectrum(bisMSBCrossSection);
+  GetPPOEmissionSpectrum     (ppoEmit);
+  GetBisMSBEmissionSpectrum  (bisMSBEmit);
+
+  // ── WLS absorption lengths ─────────────────────────────────────────────────
+  G4double wlsAbsLen[kNE], wls2AbsLen[kNE];
+  constexpr G4double kFloor = 1.e6*m; // transparent limit
+
+  for (int i = 0; i < kNE; ++i) {
+    // PPO: reference abs length at 1 g/L at peak (4.07 eV)
+    if (ppoCrossSection[i] > 1.e-9 && ppoConcGperL > 0.) {
+      wlsAbsLen[i] = kPPO_AbsRef / (ppoConcGperL * ppoCrossSection[i]);
+      wlsAbsLen[i] = std::min(wlsAbsLen[i], kFloor);
+    } else {
+      wlsAbsLen[i] = kFloor;
+    }
+
+    // bis-MSB: reference abs length at 1 g/L at peak (3.37 eV)
+    if (bisMSBCrossSection[i] > 1.e-9 && bisMSBConcGperL > 0.) {
+      wls2AbsLen[i] = kBisMSB_AbsRef / (bisMSBConcGperL * bisMSBCrossSection[i]);
+      wls2AbsLen[i] = std::min(wls2AbsLen[i], kFloor);
+    } else {
+      wls2AbsLen[i] = kFloor;
+    }
+  }
+
+  // ── Register WLS properties ────────────────────────────────────────────────
+  mpt->AddProperty("WLSABSLENGTH",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(wlsAbsLen, wlsAbsLen+kNE), true); // PPO abs → re-emit
+  mpt->AddProperty("WLS2ABSLENGTH",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(wls2AbsLen, wls2AbsLen+kNE), true); // bis-MSB abs → re-emit
+
+  mpt->AddProperty("WLSCOMPONENT",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true); // bis-MSB emission
+  mpt->AddProperty("WLS2COMPONENT",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true); // PPO emission
+
+  // bis-MSB time constant: ~1.5 ns (prompt WLS transfer)
+  mpt->AddConstProperty("WLSTIMECONSTANT",  1.5*ns, true);
+  // PPO residual WLS: ~0.5 ns
+  mpt->AddConstProperty("WLS2TIMECONSTANT", 0.5*ns, true);
+}
+
+// =============================================================================
+//  Public per-medium injectors
+//  Each method:
+//    1. Overwrites FASTCOMPONENT, SLOWCOMPONENT, yield, timing in the MPT
+//       to use the full PPO+bis-MSB two-component spectral model
+//    2. Calls ApplyWLSProperties() for the WLS chain
+//    3. Sets SCINTILLATIONYIELD via ComputeEffectiveYield()
+// =============================================================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H2O-based WbLS  (1% LAB by mass → ~1.16% by volume, ρ_LAB=0.862)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_WbLS(G4MaterialPropertiesTable* mpt,
+                                          G4double ppoConcGperL,
+                                          G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  // Overwrite scintillation spectra with PPO/bis-MSB spectra
+  //  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true);
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true);
+
+  // Effective yield: 1% LAB fraction, ~1.16% vol
+  constexpr G4double kLABfrac = 0.0116;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL, kLABfrac);
+
+  //mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield, true);
+
+  // PPO fast decay: ~2.1 ns (intrinsic 1.4 ns + Förster transfer time ~0.7 ns)
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  //mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.1*ns, true);
+  // bis-MSB effective slow: WLS transfer + emission ~ 3 ns total + 10 ns diffusion
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 12.0*ns, true);
+  // ~65% of photons via PPO fast path, 35% via bis-MSB WLS path
+  mpt->AddConstProperty("SCINTILLATIONYIELD1", 0.65, true);
+  // Non-zero rise time (excitation transfer to PPO)
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.5*ns, true);
+  // Non-zero rise time (excitation transfer to PPO)
+  //  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns, true);
+  //  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.5*ns, true);
+  
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] WbLS  PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Gd-WbLS: same fluors, slight Gd quenching (~5% reduction)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_GdWbLS(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true);
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true);
+
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kGdQuench = 0.95; // 5% quenching from Gd coordination
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kGdQuench;
+
+  //mpt->RemoveProperty("SCINTILLATIONYIELD");
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  //mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.1*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 12.0*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.65, true);
+  //  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns, true);
+  // mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.5*ns, true);
+  
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] GdWbLS PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Te-WbLS: Te loading reduces some transparency but similar fluor chain
+//  Higher PPO concentration compensates partial quenching
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_TeWbLS(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  //  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true);
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true);
+
+  // Te increases overall photon budget via higher Z (more Cherenkov) +
+  // scintillation in Te-loaded organic phase
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kTeBoost  = 1.08; // slight yield boost from Te excitation
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kTeBoost;
+
+  //mpt->RemoveProperty("SCINTILLATIONYIELD");
+  //  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  // mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  // mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  
+  // Te slightly slows fast component (heavier nucleus)
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.4*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 14.0*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.62, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.6*ns, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.8*ns, true);
+  
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] TeWbLS PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + LAB (NOVEL MEDIUM)
+//  Key differences vs H2O-based:
+//    – Lower Cherenkov threshold (n_D2O < n_H2O → slightly higher threshold)
+//      but D2O Cherenkov yield is ~2% less than H2O
+//    – D2O has lower scintillation quenching from H-D exchange
+//    – Longer absorption length in bulk → better light collection
+//    – PPO/bis-MSB chain identical to WbLS version
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OLAB(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true);
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true);
+
+  // D2O reduces H-quenching → scintillation yield is ~10-15% higher
+  // than equivalent H2O-based WbLS (SNO+ D2O experience, Biller 2020)
+  constexpr G4double kLABfrac   = 0.0116;
+  constexpr G4double kD2OBoost  = 1.12;  // 12% yield enhancement
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost;
+
+  //mpt->RemoveProperty("SCINTILLATIONYIELD");
+  
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  //  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+
+  // D2O slows vibrational quenching → slightly longer emission tail
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.3*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 13.0*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.67, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.4*ns, true);
+  
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] D2O+LAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV (D2O boost x"
+         << kD2OBoost << ")" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + Gd-LAB
+//  Combines D2O advantages with Gd neutron capture (σ_n = 49,000 barn)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OGdLAB(G4MaterialPropertiesTable* mpt,
+                                               G4double ppoConcGperL,
+                                               G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  //  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true);
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true);
+
+  constexpr G4double kLABfrac   = 0.0116;
+  constexpr G4double kD2OBoost  = 1.12;
+  constexpr G4double kGdQuench  = 0.95;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost * kGdQuench;
+
+  //mpt->RemoveProperty("SCINTILLATIONYIELD");
+  //  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  //mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.3*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 13.0*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.66, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.4*ns, true);
+  
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] D2O+GdLAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + Te-LAB (FLAGSHIP NOVEL MEDIUM)
+//  Highest sensitivity combination:
+//    – D2O  → NC reaction handle, low quenching, long abs length
+//    – Te   → 0νββ source isotope (130-Te), high Z → more Cherenkov
+//    – LAB+PPO+bis-MSB → scintillation + WLS chain
+//    – Combination enables simultaneous Cherenkov/scintillation separation
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OTeLAB(G4MaterialPropertiesTable* mpt,
+                                               G4double ppoConcGperL,
+                                               G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  //mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE), true);
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE), true);
+
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kD2OBoost = 1.12;
+  constexpr G4double kTeBoost  = 1.08;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost * kTeBoost;
+
+  //  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  //mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  // mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  //  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield, true);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.5*ns, true);   // Te adds slight delay
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 15.0*ns, true);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.63, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.6*ns, true);
+  //mpt->AddConstProperty("SCINTILLATIONRISETIME2", 2.0*ns, true);
+  
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] D2O+TeLAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV (D2Ox"
+         << kD2OBoost << " + Tex" << kTeBoost << ")" << G4endl;
+}
+/*
+// ============================================================================
+//  MaterialsWithPPO.cc
+//
+//  PPO + bis-MSB (b-MIS) fluor/WLS optical property tables.
+//
+//  References:
+//   [1] Yeh et al., NIM A 660 (2011) 51 – WbLS development
+//   [2] Aberle et al., JINST 7 (2012) E06008 – WbLS optical characterisation
+//   [3] Biller et al., JINST 15 (2020) P09016 – bis-MSB WLS in WbLS
+//   [4] Smirnov, Phys.Part.Nucl. 43 (2012) – LAB scintillator review
+//   [5] Caravaca et al., EPJC 80 (2020) – light yield model
+//   [6] SNO+ TDR (2015) – LAB + PPO + bis-MSB baseline
+//
+//  PPO (2,5-diphenyloxazole):
+//    MW = 221.26 g/mol,  peak absorption ~305 nm (4.07 eV)
+//    peak emission  ~360 nm (3.44 eV),  Stokes shift ~55 nm
+//    quantum yield  ~0.80 in LAB/toluene
+//    decay time     ~1.4 ns (fast component → FASTCOMPONENT in G4)
+//
+//  bis-MSB (1,4-bis(2-methylstyryl)benzene):
+//    MW = 310.41 g/mol,  peak absorption ~368 nm (3.37 eV)
+//    peak emission  ~420 nm (2.95 eV),  Stokes shift ~52 nm
+//    quantum yield  ~0.90 in LAB
+//    decay time     ~1.5 ns (prompt WLS → WLSCOMPONENT in G4, "delta" profile)
+//    acts as secondary shifter: absorbs PPO emission, re-emits blue-shifted
+//    into PMT peak sensitivity window (~420 nm)
+//
+//  In Geant4, this two-component system maps to:
+//    FASTCOMPONENT  → PPO direct emission (tau ~ 2 ns + 1 ns rise)
+//    SLOWCOMPONENT  → bis-MSB re-emission  (tau ~ 12 ns including WLS transfer)
+//    WLSABSLENGTH   → PPO absorption in solvent (photons absorbed then re-emitted
+//                     as WLSCOMPONENT via bis-MSB)
+//    WLS2ABSLENGTH  → bis-MSB absorption of residual PPO photons
+//    WLSCOMPONENT   → bis-MSB emission spectrum
+// ============================================================================
+ 
+#include "MaterialsWithPPO.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include <cmath>
+#include <algorithm>
+#include <numeric>
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  25-point photon energy grid: 2.00 – 4.70 eV  (264 – 620 nm)
+// ─────────────────────────────────────────────────────────────────────────────
+const G4double MaterialsWithPPO::kE[kNE] = {
+  2.00*eV, 2.14*eV, 2.30*eV, 2.48*eV, 2.58*eV,
+  2.70*eV, 2.82*eV, 2.95*eV, 3.06*eV, 3.18*eV,
+  3.26*eV, 3.35*eV, 3.44*eV, 3.54*eV, 3.65*eV,
+  3.76*eV, 3.87*eV, 3.97*eV, 4.07*eV, 4.13*eV,
+  4.20*eV, 4.28*eV, 4.36*eV, 4.50*eV, 4.70*eV
+  //620nm   580nm   539nm   500nm   480nm
+  //459nm   440nm   420nm   405nm   390nm
+  //380nm   370nm   360nm   350nm   340nm
+  //330nm   320nm   312nm   305nm   300nm
+  //295nm   290nm   284nm   276nm   264nm
+};
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  PPO emission spectrum (FAST component)
+//  Peak at ~360 nm (3.44 eV). Measured in LAB, from Aberle et al. 2012.
+//  Normalised so max = 1.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetPPOEmissionSpectrum(G4double* s)
+{
+  //  index:  0     1     2     3     4
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  //  index:  5     6     7     8     9
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.002; s[ 8] = 0.010; s[ 9] = 0.040;
+  //  index: 10    11    12    13    14
+  s[10] = 0.100; s[11] = 0.280; s[12] = 1.000; s[13] = 0.860; s[14] = 0.520;
+  //  index: 15    16    17    18    19
+  s[15] = 0.240; s[16] = 0.095; s[17] = 0.030; s[18] = 0.008; s[19] = 0.002;
+  //  index: 20    21    22    23    24
+  s[20] = 0.000; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  bis-MSB emission spectrum (SLOW / WLS component)
+//  Peak at ~420 nm (2.95 eV).  Measured in LAB, from Biller et al. 2020.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetBisMSBEmissionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.002; s[ 4] = 0.008;
+  s[ 5] = 0.025; s[ 6] = 0.090; s[ 7] = 1.000; s[ 8] = 0.950; s[ 9] = 0.740;
+  s[10] = 0.520; s[11] = 0.310; s[12] = 0.130; s[13] = 0.040; s[14] = 0.010;
+  s[15] = 0.002; s[16] = 0.000; s[17] = 0.000; s[18] = 0.000; s[19] = 0.000;
+  s[20] = 0.000; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  PPO absorption spectrum (for WLS mean-free-path)
+//  Peak at ~305 nm (4.07 eV). Normalised.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetPPOAbsorptionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.000; s[ 8] = 0.000; s[ 9] = 0.000;
+  s[10] = 0.002; s[11] = 0.010; s[12] = 0.040; s[13] = 0.120; s[14] = 0.280;
+  s[15] = 0.520; s[16] = 0.820; s[17] = 0.950; s[18] = 1.000; s[19] = 0.980;
+  s[20] = 0.900; s[21] = 0.700; s[22] = 0.400; s[23] = 0.120; s[24] = 0.020;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  bis-MSB absorption spectrum (for WLS2 mean-free-path)
+//  Peak at ~368 nm (3.37 eV). Normalised.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetBisMSBAbsorptionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.000; s[ 8] = 0.000; s[ 9] = 0.002;
+  s[10] = 0.010; s[11] = 0.080; s[12] = 0.350; s[13] = 0.780; s[14] = 1.000;
+  s[15] = 0.920; s[16] = 0.620; s[17] = 0.300; s[18] = 0.080; s[19] = 0.020;
+  s[20] = 0.005; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Effective yield model
+//  Based on Caravaca et al. EPJC 80 (2020):
+//    Y_eff = Y_LAB × f_LAB × η_PPO × η_WLS
+//  where:
+//    Y_LAB   ≈ 15,000 ph/MeV (pure LAB+PPO)
+//    f_LAB   = LAB volume fraction in solvent mixture
+//    η_PPO   = PPO transfer efficiency (saturates > 1.5 g/L, ~0.95-0.99)
+//    η_WLS   = bis-MSB Förster transfer efficiency (~0.90-0.97 at 0.05 g/L)
+// ─────────────────────────────────────────────────────────────────────────────
+G4double MaterialsWithPPO::ComputeEffectiveYield(G4double ppoConcGperL,
+                                                  G4double bisMSBConcGperL,
+                                                  G4double labFraction,
+                                                  G4double wlsTransferEff)
+{
+  constexpr G4double kBaseLABYield = 15000.; // ph/MeV for pure LAB+PPO at 3 g/L
+ 
+  // PPO efficiency: Förster transfer from LAB to PPO
+  // Saturates at ~2 g/L; parametrised as simple saturation function
+  G4double etaPPO = (ppoConcGperL > 0.)
+    ? ppoConcGperL / (ppoConcGperL + 0.4)   // 0.4 g/L half-saturation
+    : 0.0;
+  etaPPO = std::min(etaPPO, 0.99);
+ 
+  // bis-MSB WLS efficiency: depends on concentration and overlap integral
+  G4double etaWLS = (bisMSBConcGperL > 0.)
+    ? wlsTransferEff * (1.0 - std::exp(-bisMSBConcGperL / 0.02))
+    : 0.0;
+  etaWLS = std::min(etaWLS, 0.97);
+ 
+  G4double yield = kBaseLABYield * labFraction * etaPPO * etaWLS;
+  return yield / MeV;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Internal: Apply scaled WLS absorption lengths + emission spectra to MPT
+//
+//  WLSABSLENGTH  = PPO absorption length as function of energy
+//  WLS2ABSLENGTH = bis-MSB absorption length as function of energy
+//  WLSCOMPONENT  = bis-MSB emission spectrum (primary output of WLS chain)
+//  WLS2COMPONENT = PPO direct emission (residual, for completeness)
+//
+//  Absorption length L(E) = L_ref / (C / C_ref) / σ_norm(E)
+//    where σ_norm is the normalised cross section at energy E.
+//    A floor is set at 1e6 m (transparent) to avoid zero.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::ApplyWLSProperties(G4MaterialPropertiesTable* mpt,
+                                           G4double ppoConcGperL,
+                                           G4double bisMSBConcGperL,
+                                           G4double solventScintYield)
+{
+  G4double ppoCrossSection[kNE], bisMSBCrossSection[kNE];
+  G4double ppoEmit[kNE],         bisMSBEmit[kNE];
+ 
+  GetPPOAbsorptionSpectrum   (ppoCrossSection);
+  GetBisMSBAbsorptionSpectrum(bisMSBCrossSection);
+  GetPPOEmissionSpectrum     (ppoEmit);
+  GetBisMSBEmissionSpectrum  (bisMSBEmit);
+ 
+  // ── WLS absorption lengths ─────────────────────────────────────────────────
+  G4double wlsAbsLen[kNE], wls2AbsLen[kNE];
+  constexpr G4double kFloor = 1.e6*m; // transparent limit
+ 
+  for (int i = 0; i < kNE; ++i) {
+    // PPO: reference abs length at 1 g/L at peak (4.07 eV)
+    if (ppoCrossSection[i] > 1.e-9 && ppoConcGperL > 0.) {
+      wlsAbsLen[i] = kPPO_AbsRef / (ppoConcGperL * ppoCrossSection[i]);
+      wlsAbsLen[i] = std::min(wlsAbsLen[i], kFloor);
+    } else {
+      wlsAbsLen[i] = kFloor;
+    }
+ 
+    // bis-MSB: reference abs length at 1 g/L at peak (3.37 eV)
+    if (bisMSBCrossSection[i] > 1.e-9 && bisMSBConcGperL > 0.) {
+      wls2AbsLen[i] = kBisMSB_AbsRef / (bisMSBConcGperL * bisMSBCrossSection[i]);
+      wls2AbsLen[i] = std::min(wls2AbsLen[i], kFloor);
+    } else {
+      wls2AbsLen[i] = kFloor;
+    }
+  }
+ 
+  // ── Register WLS properties ────────────────────────────────────────────────
+  mpt->AddProperty("WLSABSLENGTH",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(wlsAbsLen, wlsAbsLen+kNE)); // PPO abs → re-emit
+  mpt->AddProperty("WLS2ABSLENGTH",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(wls2AbsLen, wls2AbsLen+kNE)); // bis-MSB abs → re-emit
+ 
+  mpt->AddProperty("WLSCOMPONENT",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE)); // bis-MSB emission
+  mpt->AddProperty("WLS2COMPONENT",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE)); // PPO emission
+ 
+  // bis-MSB time constant: ~1.5 ns (prompt WLS transfer)
+  mpt->AddConstProperty("WLSTIMECONSTANT",  1.5*ns);
+  // PPO residual WLS: ~0.5 ns
+  mpt->AddConstProperty("WLS2TIMECONSTANT", 0.5*ns);
+}
+ 
+// =============================================================================
+//  Public per-medium injectors
+//  Each method:
+//    1. Overwrites FASTCOMPONENT, SLOWCOMPONENT, yield, timing in the MPT
+//       to use the full PPO+bis-MSB two-component spectral model
+//    2. Calls ApplyWLSProperties() for the WLS chain
+//    3. Sets SCINTILLATIONYIELD via ComputeEffectiveYield()
+// =============================================================================
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  H2O-based WbLS  (1% LAB by mass → ~1.16% by volume, ρ_LAB=0.862)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_WbLS(G4MaterialPropertiesTable* mpt,
+                                          G4double ppoConcGperL,
+                                          G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+ 
+  // Overwrite scintillation spectra with PPO/bis-MSB spectra
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE));
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE));
+ 
+  // Effective yield: 1% LAB fraction, ~1.16% vol
+  constexpr G4double kLABfrac = 0.0116;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL, kLABfrac);
+ 
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+ 
+  // PPO fast decay: ~2.1 ns (intrinsic 1.4 ns + Förster transfer time ~0.7 ns)
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.1*ns);
+  // bis-MSB effective slow: WLS transfer + emission ~ 3 ns total + 10 ns diffusion
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 12.0*ns);
+  // ~65% of photons via PPO fast path, 35% via bis-MSB WLS path
+  mpt->AddConstProperty("SCINTILLATIONYIELD1", 0.65);
+ 
+  // Non-zero rise time (excitation transfer to PPO)
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.5*ns);
+ 
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+ 
+  G4cout << "[MaterialsWithPPO] WbLS  PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Gd-WbLS: same fluors, slight Gd quenching (~5% reduction)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_GdWbLS(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+ 
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE));
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE));
+ 
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kGdQuench = 0.95; // 5% quenching from Gd coordination
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kGdQuench;
+ 
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.1*ns);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 12.0*ns);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.65);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.5*ns);
+ 
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+ 
+  G4cout << "[MaterialsWithPPO] GdWbLS PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Te-WbLS: Te loading reduces some transparency but similar fluor chain
+//  Higher PPO concentration compensates partial quenching
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_TeWbLS(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+ 
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE));
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE));
+ 
+  // Te increases overall photon budget via higher Z (more Cherenkov) +
+  // scintillation in Te-loaded organic phase
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kTeBoost  = 1.08; // slight yield boost from Te excitation
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kTeBoost;
+ 
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  // Te slightly slows fast component (heavier nucleus)
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.4*ns);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 14.0*ns);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.62);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.6*ns);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.8*ns);
+ 
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+ 
+  G4cout << "[MaterialsWithPPO] TeWbLS PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + LAB (NOVEL MEDIUM)
+//  Key differences vs H2O-based:
+//    – Lower Cherenkov threshold (n_D2O < n_H2O → slightly higher threshold)
+//      but D2O Cherenkov yield is ~2% less than H2O
+//    – D2O has lower scintillation quenching from H-D exchange
+//    – Longer absorption length in bulk → better light collection
+//    – PPO/bis-MSB chain identical to WbLS version
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OLAB(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+ 
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE));
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE));
+ 
+  // D2O reduces H-quenching → scintillation yield is ~10-15% higher
+  // than equivalent H2O-based WbLS (SNO+ D2O experience, Biller 2020)
+  constexpr G4double kLABfrac   = 0.0116;
+  constexpr G4double kD2OBoost  = 1.12;  // 12% yield enhancement
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost;
+ 
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  // D2O slows vibrational quenching → slightly longer emission tail
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.3*ns);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 13.0*ns);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.67);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.4*ns);
+ 
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+ 
+  G4cout << "[MaterialsWithPPO] D2O+LAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV (D2O boost x"
+         << kD2OBoost << ")" << G4endl;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + Gd-LAB
+//  Combines D2O advantages with Gd neutron capture (σ_n = 49,000 barn)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OGdLAB(G4MaterialPropertiesTable* mpt,
+                                               G4double ppoConcGperL,
+                                               G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+ 
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE));
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE));
+ 
+  constexpr G4double kLABfrac   = 0.0116;
+  constexpr G4double kD2OBoost  = 1.12;
+  constexpr G4double kGdQuench  = 0.95;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost * kGdQuench;
+ 
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.3*ns);
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 13.0*ns);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.66);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.5*ns);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 1.4*ns);
+ 
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+ 
+  G4cout << "[MaterialsWithPPO] D2O+GdLAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + Te-LAB (FLAGSHIP NOVEL MEDIUM)
+//  Highest sensitivity combination:
+//    – D2O  → NC reaction handle, low quenching, long abs length
+//    – Te   → 0νββ source isotope (130-Te), high Z → more Cherenkov
+//    – LAB+PPO+bis-MSB → scintillation + WLS chain
+//    – Combination enables simultaneous Cherenkov/scintillation separation
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OTeLAB(G4MaterialPropertiesTable* mpt,
+                                               G4double ppoConcGperL,
+                                               G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+ 
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT1");
+  mpt->RemoveProperty("SCINTILLATIONCOMPONENT2");
+  mpt->AddProperty("SCINTILLATIONCOMPONENT1",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(ppoEmit, ppoEmit+kNE));
+  mpt->AddProperty("SCINTILLATIONCOMPONENT2",
+        std::vector<G4double>(kE, kE+kNE),
+        std::vector<G4double>(bisMSBEmit, bisMSBEmit+kNE));
+ 
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kD2OBoost = 1.12;
+  constexpr G4double kTeBoost  = 1.08;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost * kTeBoost;
+ 
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT1");
+  mpt->RemoveProperty("SCINTILLATIONTIMECONSTANT2");
+  mpt->RemoveProperty("SCINTILLATIONYIELD1");
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT1", 2.5*ns);   // Te adds slight delay
+  mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT2", 15.0*ns);
+  mpt->AddConstProperty("SCINTILLATIONYIELD1",       0.63);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME1", 0.6*ns);
+  mpt->AddConstProperty("SCINTILLATIONRISETIME2", 2.0*ns);
+ 
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+ 
+  G4cout << "[MaterialsWithPPO] D2O+TeLAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV (D2Ox"
+         << kD2OBoost << " + Tex" << kTeBoost << ")" << G4endl;
+}
+*/
+/*
+// ============================================================================
+//  MaterialsWithPPO.cc
+//
+//  PPO + bis-MSB (b-MIS) fluor/WLS optical property tables.
+//
+//  References:
+//   [1] Yeh et al., NIM A 660 (2011) 51 – WbLS development
+//   [2] Aberle et al., JINST 7 (2012) E06008 – WbLS optical characterisation
+//   [3] Biller et al., JINST 15 (2020) P09016 – bis-MSB WLS in WbLS
+//   [4] Smirnov, Phys.Part.Nucl. 43 (2012) – LAB scintillator review
+//   [5] Caravaca et al., EPJC 80 (2020) – light yield model
+//   [6] SNO+ TDR (2015) – LAB + PPO + bis-MSB baseline
+//
+//  PPO (2,5-diphenyloxazole):
+//    MW = 221.26 g/mol,  peak absorption ~305 nm (4.07 eV)
+//    peak emission  ~360 nm (3.44 eV),  Stokes shift ~55 nm
+//    quantum yield  ~0.80 in LAB/toluene
+//    decay time     ~1.4 ns (fast component → FASTCOMPONENT in G4)
+//
+//  bis-MSB (1,4-bis(2-methylstyryl)benzene):
+//    MW = 310.41 g/mol,  peak absorption ~368 nm (3.37 eV)
+//    peak emission  ~420 nm (2.95 eV),  Stokes shift ~52 nm
+//    quantum yield  ~0.90 in LAB
+//    decay time     ~1.5 ns (prompt WLS → WLSCOMPONENT in G4, "delta" profile)
+//    acts as secondary shifter: absorbs PPO emission, re-emits blue-shifted
+//    into PMT peak sensitivity window (~420 nm)
+//
+//  In Geant4, this two-component system maps to:
+//    FASTCOMPONENT  → PPO direct emission (tau ~ 2 ns + 1 ns rise)
+//    SLOWCOMPONENT  → bis-MSB re-emission  (tau ~ 12 ns including WLS transfer)
+//    WLSABSLENGTH   → PPO absorption in solvent (photons absorbed then re-emitted
+//                     as WLSCOMPONENT via bis-MSB)
+//    WLS2ABSLENGTH  → bis-MSB absorption of residual PPO photons
+//    WLSCOMPONENT   → bis-MSB emission spectrum
+// ============================================================================
+
+#include "MaterialsWithPPO.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include <cmath>
+#include <algorithm>
+#include <numeric>
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  25-point photon energy grid: 2.00 – 4.70 eV  (264 – 620 nm)
+// ─────────────────────────────────────────────────────────────────────────────
+const G4double MaterialsWithPPO::kE[kNE] = {
+  2.00*eV, 2.14*eV, 2.30*eV, 2.48*eV, 2.58*eV,
+  2.70*eV, 2.82*eV, 2.95*eV, 3.06*eV, 3.18*eV,
+  3.26*eV, 3.35*eV, 3.44*eV, 3.54*eV, 3.65*eV,
+  3.76*eV, 3.87*eV, 3.97*eV, 4.07*eV, 4.13*eV,
+  4.20*eV, 4.28*eV, 4.36*eV, 4.50*eV, 4.70*eV
+  //620nm   580nm   539nm   500nm   480nm
+  //459nm   440nm   420nm   405nm   390nm
+  //380nm   370nm   360nm   350nm   340nm
+  //330nm   320nm   312nm   305nm   300nm
+  //295nm   290nm   284nm   276nm   264nm
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PPO emission spectrum (FAST component)
+//  Peak at ~360 nm (3.44 eV). Measured in LAB, from Aberle et al. 2012.
+//  Normalised so max = 1.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetPPOEmissionSpectrum(G4double* s)
+{
+  //  index:  0     1     2     3     4
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  //  index:  5     6     7     8     9
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.002; s[ 8] = 0.010; s[ 9] = 0.040;
+  //  index: 10    11    12    13    14
+  s[10] = 0.100; s[11] = 0.280; s[12] = 1.000; s[13] = 0.860; s[14] = 0.520;
+  //  index: 15    16    17    18    19
+  s[15] = 0.240; s[16] = 0.095; s[17] = 0.030; s[18] = 0.008; s[19] = 0.002;
+  //  index: 20    21    22    23    24
+  s[20] = 0.000; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  bis-MSB emission spectrum (SLOW / WLS component)
+//  Peak at ~420 nm (2.95 eV).  Measured in LAB, from Biller et al. 2020.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetBisMSBEmissionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.002; s[ 4] = 0.008;
+  s[ 5] = 0.025; s[ 6] = 0.090; s[ 7] = 1.000; s[ 8] = 0.950; s[ 9] = 0.740;
+  s[10] = 0.520; s[11] = 0.310; s[12] = 0.130; s[13] = 0.040; s[14] = 0.010;
+  s[15] = 0.002; s[16] = 0.000; s[17] = 0.000; s[18] = 0.000; s[19] = 0.000;
+  s[20] = 0.000; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PPO absorption spectrum (for WLS mean-free-path)
+//  Peak at ~305 nm (4.07 eV). Normalised.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetPPOAbsorptionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.000; s[ 8] = 0.000; s[ 9] = 0.000;
+  s[10] = 0.002; s[11] = 0.010; s[12] = 0.040; s[13] = 0.120; s[14] = 0.280;
+  s[15] = 0.520; s[16] = 0.820; s[17] = 0.950; s[18] = 1.000; s[19] = 0.980;
+  s[20] = 0.900; s[21] = 0.700; s[22] = 0.400; s[23] = 0.120; s[24] = 0.020;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  bis-MSB absorption spectrum (for WLS2 mean-free-path)
+//  Peak at ~368 nm (3.37 eV). Normalised.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::GetBisMSBAbsorptionSpectrum(G4double* s)
+{
+  s[ 0] = 0.000; s[ 1] = 0.000; s[ 2] = 0.000; s[ 3] = 0.000; s[ 4] = 0.000;
+  s[ 5] = 0.000; s[ 6] = 0.000; s[ 7] = 0.000; s[ 8] = 0.000; s[ 9] = 0.002;
+  s[10] = 0.010; s[11] = 0.080; s[12] = 0.350; s[13] = 0.780; s[14] = 1.000;
+  s[15] = 0.920; s[16] = 0.620; s[17] = 0.300; s[18] = 0.080; s[19] = 0.020;
+  s[20] = 0.005; s[21] = 0.000; s[22] = 0.000; s[23] = 0.000; s[24] = 0.000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Effective yield model
+//  Based on Caravaca et al. EPJC 80 (2020):
+//    Y_eff = Y_LAB × f_LAB × η_PPO × η_WLS
+//  where:
+//    Y_LAB   ≈ 15,000 ph/MeV (pure LAB+PPO)
+//    f_LAB   = LAB volume fraction in solvent mixture
+//    η_PPO   = PPO transfer efficiency (saturates > 1.5 g/L, ~0.95-0.99)
+//    η_WLS   = bis-MSB Förster transfer efficiency (~0.90-0.97 at 0.05 g/L)
+// ─────────────────────────────────────────────────────────────────────────────
+G4double MaterialsWithPPO::ComputeEffectiveYield(G4double ppoConcGperL,
+                                                  G4double bisMSBConcGperL,
+                                                  G4double labFraction,
+                                                  G4double wlsTransferEff)
+{
+  constexpr G4double kBaseLABYield = 15000.; // ph/MeV for pure LAB+PPO at 3 g/L
+
+  // PPO efficiency: Förster transfer from LAB to PPO
+  // Saturates at ~2 g/L; parametrised as simple saturation function
+  G4double etaPPO = (ppoConcGperL > 0.)
+    ? ppoConcGperL / (ppoConcGperL + 0.4)   // 0.4 g/L half-saturation
+    : 0.0;
+  etaPPO = std::min(etaPPO, 0.99);
+
+  // bis-MSB WLS efficiency: depends on concentration and overlap integral
+  G4double etaWLS = (bisMSBConcGperL > 0.)
+    ? wlsTransferEff * (1.0 - std::exp(-bisMSBConcGperL / 0.02))
+    : 0.0;
+  etaWLS = std::min(etaWLS, 0.97);
+
+  G4double yield = kBaseLABYield * labFraction * etaPPO * etaWLS;
+  return yield / MeV;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Internal: Apply scaled WLS absorption lengths + emission spectra to MPT
+//
+//  WLSABSLENGTH  = PPO absorption length as function of energy
+//  WLS2ABSLENGTH = bis-MSB absorption length as function of energy
+//  WLSCOMPONENT  = bis-MSB emission spectrum (primary output of WLS chain)
+//  WLS2COMPONENT = PPO direct emission (residual, for completeness)
+//
+//  Absorption length L(E) = L_ref / (C / C_ref) / σ_norm(E)
+//    where σ_norm is the normalised cross section at energy E.
+//    A floor is set at 1e6 m (transparent) to avoid zero.
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::ApplyWLSProperties(G4MaterialPropertiesTable* mpt,
+                                           G4double ppoConcGperL,
+                                           G4double bisMSBConcGperL,
+                                           G4double solventScintYield)
+{
+  G4double ppoCrossSection[kNE], bisMSBCrossSection[kNE];
+  G4double ppoEmit[kNE],         bisMSBEmit[kNE];
+
+  GetPPOAbsorptionSpectrum   (ppoCrossSection);
+  GetBisMSBAbsorptionSpectrum(bisMSBCrossSection);
+  GetPPOEmissionSpectrum     (ppoEmit);
+  GetBisMSBEmissionSpectrum  (bisMSBEmit);
+
+  // ── WLS absorption lengths ─────────────────────────────────────────────────
+  G4double wlsAbsLen[kNE], wls2AbsLen[kNE];
+  constexpr G4double kFloor = 1.e6*m; // transparent limit
+
+  for (int i = 0; i < kNE; ++i) {
+    // PPO: reference abs length at 1 g/L at peak (4.07 eV)
+    if (ppoCrossSection[i] > 1.e-9 && ppoConcGperL > 0.) {
+      wlsAbsLen[i] = kPPO_AbsRef / (ppoConcGperL * ppoCrossSection[i]);
+      wlsAbsLen[i] = std::min(wlsAbsLen[i], kFloor);
+    } else {
+      wlsAbsLen[i] = kFloor;
+    }
+
+    // bis-MSB: reference abs length at 1 g/L at peak (3.37 eV)
+    if (bisMSBCrossSection[i] > 1.e-9 && bisMSBConcGperL > 0.) {
+      wls2AbsLen[i] = kBisMSB_AbsRef / (bisMSBConcGperL * bisMSBCrossSection[i]);
+      wls2AbsLen[i] = std::min(wls2AbsLen[i], kFloor);
+    } else {
+      wls2AbsLen[i] = kFloor;
+    }
+  }
+
+  // ── Register WLS properties ────────────────────────────────────────────────
+  mpt->AddProperty("WLSABSLENGTH",  kE, wlsAbsLen,  kNE); // PPO abs → re-emit
+  mpt->AddProperty("WLS2ABSLENGTH", kE, wls2AbsLen, kNE); // bis-MSB abs → re-emit
+
+  mpt->AddProperty("WLSCOMPONENT",  kE, bisMSBEmit, kNE); // bis-MSB emission
+  mpt->AddProperty("WLS2COMPONENT", kE, ppoEmit,    kNE); // PPO emission
+
+  // bis-MSB time constant: ~1.5 ns (prompt WLS transfer)
+  mpt->AddConstProperty("WLSTIMECONSTANT",  1.5*ns);
+  // PPO residual WLS: ~0.5 ns
+  mpt->AddConstProperty("WLS2TIMECONSTANT", 0.5*ns);
+}
+
+// =============================================================================
+//  Public per-medium injectors
+//  Each method:
+//    1. Overwrites FASTCOMPONENT, SLOWCOMPONENT, yield, timing in the MPT
+//       to use the full PPO+bis-MSB two-component spectral model
+//    2. Calls ApplyWLSProperties() for the WLS chain
+//    3. Sets SCINTILLATIONYIELD via ComputeEffectiveYield()
+// =============================================================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H2O-based WbLS  (1% LAB by mass → ~1.16% by volume, ρ_LAB=0.862)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_WbLS(G4MaterialPropertiesTable* mpt,
+                                          G4double ppoConcGperL,
+                                          G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  // Overwrite scintillation spectra with PPO/bis-MSB spectra
+  mpt->RemoveProperty("FASTCOMPONENT");
+  mpt->RemoveProperty("SLOWCOMPONENT");
+  mpt->AddProperty("FASTCOMPONENT", kE, ppoEmit,    kNE);
+  mpt->AddProperty("SLOWCOMPONENT", kE, bisMSBEmit, kNE);
+
+  // Effective yield: 1% LAB fraction, ~1.16% vol
+  constexpr G4double kLABfrac = 0.0116;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL, kLABfrac);
+
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+
+  // PPO fast decay: ~2.1 ns (intrinsic 1.4 ns + Förster transfer time ~0.7 ns)
+  mpt->RemoveProperty("FASTTIMECONSTANT");
+  mpt->RemoveProperty("SLOWTIMECONSTANT");
+  mpt->RemoveProperty("YIELDRATIO");
+  mpt->AddConstProperty("FASTTIMECONSTANT", 2.1*ns);
+  // bis-MSB effective slow: WLS transfer + emission ~ 3 ns total + 10 ns diffusion
+  mpt->AddConstProperty("SLOWTIMECONSTANT", 12.0*ns);
+  // ~65% of photons via PPO fast path, 35% via bis-MSB WLS path
+  mpt->AddConstProperty("YIELDRATIO", 0.65);
+
+  // Non-zero rise time (excitation transfer to PPO)
+  mpt->AddConstProperty("FASTSCINTILLATIONRISETIME", 0.5*ns);
+  mpt->AddConstProperty("SLOWSCINTILLATIONRISETIME", 1.5*ns);
+
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] WbLS  PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Gd-WbLS: same fluors, slight Gd quenching (~5% reduction)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_GdWbLS(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  mpt->RemoveProperty("FASTCOMPONENT");
+  mpt->RemoveProperty("SLOWCOMPONENT");
+  mpt->AddProperty("FASTCOMPONENT", kE, ppoEmit,    kNE);
+  mpt->AddProperty("SLOWCOMPONENT", kE, bisMSBEmit, kNE);
+
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kGdQuench = 0.95; // 5% quenching from Gd coordination
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kGdQuench;
+
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("FASTTIMECONSTANT");
+  mpt->RemoveProperty("SLOWTIMECONSTANT");
+  mpt->RemoveProperty("YIELDRATIO");
+  mpt->AddConstProperty("FASTTIMECONSTANT", 2.1*ns);
+  mpt->AddConstProperty("SLOWTIMECONSTANT", 12.0*ns);
+  mpt->AddConstProperty("YIELDRATIO",       0.65);
+  mpt->AddConstProperty("FASTSCINTILLATIONRISETIME", 0.5*ns);
+  mpt->AddConstProperty("SLOWSCINTILLATIONRISETIME", 1.5*ns);
+
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] GdWbLS PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Te-WbLS: Te loading reduces some transparency but similar fluor chain
+//  Higher PPO concentration compensates partial quenching
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_TeWbLS(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  mpt->RemoveProperty("FASTCOMPONENT");
+  mpt->RemoveProperty("SLOWCOMPONENT");
+  mpt->AddProperty("FASTCOMPONENT", kE, ppoEmit,    kNE);
+  mpt->AddProperty("SLOWCOMPONENT", kE, bisMSBEmit, kNE);
+
+  // Te increases overall photon budget via higher Z (more Cherenkov) +
+  // scintillation in Te-loaded organic phase
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kTeBoost  = 1.08; // slight yield boost from Te excitation
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kTeBoost;
+
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("FASTTIMECONSTANT");
+  mpt->RemoveProperty("SLOWTIMECONSTANT");
+  mpt->RemoveProperty("YIELDRATIO");
+  // Te slightly slows fast component (heavier nucleus)
+  mpt->AddConstProperty("FASTTIMECONSTANT", 2.4*ns);
+  mpt->AddConstProperty("SLOWTIMECONSTANT", 14.0*ns);
+  mpt->AddConstProperty("YIELDRATIO",       0.62);
+  mpt->AddConstProperty("FASTSCINTILLATIONRISETIME", 0.6*ns);
+  mpt->AddConstProperty("SLOWSCINTILLATIONRISETIME", 1.8*ns);
+
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] TeWbLS PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + LAB (NOVEL MEDIUM)
+//  Key differences vs H2O-based:
+//    – Lower Cherenkov threshold (n_D2O < n_H2O → slightly higher threshold)
+//      but D2O Cherenkov yield is ~2% less than H2O
+//    – D2O has lower scintillation quenching from H-D exchange
+//    – Longer absorption length in bulk → better light collection
+//    – PPO/bis-MSB chain identical to WbLS version
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OLAB(G4MaterialPropertiesTable* mpt,
+                                             G4double ppoConcGperL,
+                                             G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  mpt->RemoveProperty("FASTCOMPONENT");
+  mpt->RemoveProperty("SLOWCOMPONENT");
+  mpt->AddProperty("FASTCOMPONENT", kE, ppoEmit,    kNE);
+  mpt->AddProperty("SLOWCOMPONENT", kE, bisMSBEmit, kNE);
+
+  // D2O reduces H-quenching → scintillation yield is ~10-15% higher
+  // than equivalent H2O-based WbLS (SNO+ D2O experience, Biller 2020)
+  constexpr G4double kLABfrac   = 0.0116;
+  constexpr G4double kD2OBoost  = 1.12;  // 12% yield enhancement
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost;
+
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("FASTTIMECONSTANT");
+  mpt->RemoveProperty("SLOWTIMECONSTANT");
+  mpt->RemoveProperty("YIELDRATIO");
+  // D2O slows vibrational quenching → slightly longer emission tail
+  mpt->AddConstProperty("FASTTIMECONSTANT", 2.3*ns);
+  mpt->AddConstProperty("SLOWTIMECONSTANT", 13.0*ns);
+  mpt->AddConstProperty("YIELDRATIO",       0.67);
+  mpt->AddConstProperty("FASTSCINTILLATIONRISETIME", 0.5*ns);
+  mpt->AddConstProperty("SLOWSCINTILLATIONRISETIME", 1.4*ns);
+
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] D2O+LAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV (D2O boost x"
+         << kD2OBoost << ")" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + Gd-LAB
+//  Combines D2O advantages with Gd neutron capture (σ_n = 49,000 barn)
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OGdLAB(G4MaterialPropertiesTable* mpt,
+                                               G4double ppoConcGperL,
+                                               G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  mpt->RemoveProperty("FASTCOMPONENT");
+  mpt->RemoveProperty("SLOWCOMPONENT");
+  mpt->AddProperty("FASTCOMPONENT", kE, ppoEmit,    kNE);
+  mpt->AddProperty("SLOWCOMPONENT", kE, bisMSBEmit, kNE);
+
+  constexpr G4double kLABfrac   = 0.0116;
+  constexpr G4double kD2OBoost  = 1.12;
+  constexpr G4double kGdQuench  = 0.95;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost * kGdQuench;
+
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("FASTTIMECONSTANT");
+  mpt->RemoveProperty("SLOWTIMECONSTANT");
+  mpt->RemoveProperty("YIELDRATIO");
+  mpt->AddConstProperty("FASTTIMECONSTANT", 2.3*ns);
+  mpt->AddConstProperty("SLOWTIMECONSTANT", 13.0*ns);
+  mpt->AddConstProperty("YIELDRATIO",       0.66);
+  mpt->AddConstProperty("FASTSCINTILLATIONRISETIME", 0.5*ns);
+  mpt->AddConstProperty("SLOWSCINTILLATIONRISETIME", 1.4*ns);
+
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] D2O+GdLAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV" << G4endl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  D2O + Te-LAB (FLAGSHIP NOVEL MEDIUM)
+//  Highest sensitivity combination:
+//    – D2O  → NC reaction handle, low quenching, long abs length
+//    – Te   → 0νββ source isotope (130-Te), high Z → more Cherenkov
+//    – LAB+PPO+bis-MSB → scintillation + WLS chain
+//    – Combination enables simultaneous Cherenkov/scintillation separation
+// ─────────────────────────────────────────────────────────────────────────────
+void MaterialsWithPPO::AddPPOBisMSB_D2OTeLAB(G4MaterialPropertiesTable* mpt,
+                                               G4double ppoConcGperL,
+                                               G4double bisMSBConcGperL)
+{
+  G4double ppoEmit[kNE], bisMSBEmit[kNE];
+  GetPPOEmissionSpectrum   (ppoEmit);
+  GetBisMSBEmissionSpectrum(bisMSBEmit);
+
+  mpt->RemoveProperty("FASTCOMPONENT");
+  mpt->RemoveProperty("SLOWCOMPONENT");
+  mpt->AddProperty("FASTCOMPONENT", kE, ppoEmit,    kNE);
+  mpt->AddProperty("SLOWCOMPONENT", kE, bisMSBEmit, kNE);
+
+  constexpr G4double kLABfrac  = 0.0116;
+  constexpr G4double kD2OBoost = 1.12;
+  constexpr G4double kTeBoost  = 1.08;
+  G4double yield = ComputeEffectiveYield(ppoConcGperL, bisMSBConcGperL,
+                                         kLABfrac) * kD2OBoost * kTeBoost;
+
+  mpt->RemoveProperty("SCINTILLATIONYIELD");
+  mpt->AddConstProperty("SCINTILLATIONYIELD", yield);
+  mpt->RemoveProperty("FASTTIMECONSTANT");
+  mpt->RemoveProperty("SLOWTIMECONSTANT");
+  mpt->RemoveProperty("YIELDRATIO");
+  mpt->AddConstProperty("FASTTIMECONSTANT", 2.5*ns);   // Te adds slight delay
+  mpt->AddConstProperty("SLOWTIMECONSTANT", 15.0*ns);
+  mpt->AddConstProperty("YIELDRATIO",       0.63);
+  mpt->AddConstProperty("FASTSCINTILLATIONRISETIME", 0.6*ns);
+  mpt->AddConstProperty("SLOWSCINTILLATIONRISETIME", 2.0*ns);
+
+  ApplyWLSProperties(mpt, ppoConcGperL, bisMSBConcGperL, yield);
+
+  G4cout << "[MaterialsWithPPO] D2O+TeLAB PPO=" << ppoConcGperL
+         << " g/L, bis-MSB=" << bisMSBConcGperL
+         << " g/L → yield=" << yield*MeV << " ph/MeV (D2Ox"
+         << kD2OBoost << " + Tex" << kTeBoost << ")" << G4endl;
+}
+*/

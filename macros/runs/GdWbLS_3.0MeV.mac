@@ -1,0 +1,10 @@
+# Standalone: GdWbLS @ 3.0 MeV
+# Usage: ./build/NeutrinoDetSim macros/runs/GdWbLS_3.0MeV.mac
+/run/verbose 0
+/event/verbose 0
+/tracking/verbose 0
+/det/medium GdWbLS
+/run/initialize
+/gun/particle e-
+/gun/energy 3.0 MeV
+/run/beamOn 1000

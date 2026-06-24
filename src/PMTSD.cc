@@ -1,0 +1,397 @@
+// ============================================================================
+//  PMTSD.cc  —  Hamamatsu R1307 realistic QE from datasheet Figure 1
+//
+//  QE values digitised from Figure 1 of R1307 datasheet:
+//  Peak QE = 30% at 420 nm (bialkali photocathode)
+//  Spectral range 300-650 nm
+// ============================================================================
+#include "PMTSD.hh"
+#include "G4Step.hh"
+#include "G4Track.hh"
+#include "G4TrackStatus.hh"
+#include "G4SDManager.hh"
+#include "G4OpticalPhoton.hh"
+#include "G4HCofThisEvent.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include "G4VProcess.hh"
+#include "G4StepStatus.hh"
+#include "Randomize.hh"
+
+PMTSD::PMTSD(const G4String& name, const G4String& hcName)
+  : G4VSensitiveDetector(name)
+{
+  collectionName.insert(hcName);
+}
+
+void PMTSD::Initialize(G4HCofThisEvent* hce)
+{
+  fHitsCollection = new PMTHitsCollection(SensitiveDetectorName, collectionName[0]);
+  if (fHCID < 0)
+    fHCID = G4SDManager::GetSDMpointer()->GetCollectionID(fHitsCollection);
+  hce->AddHitsCollection(fHCID, fHitsCollection);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Hamamatsu R1307 QE spectrum — digitised from datasheet Figure 1
+//  Bialkali (K2CsSb) photocathode on borosilicate glass
+//
+//  Data points (wavelength nm, QE %):
+//  Curve read at typical values matching spec: peak 30% @ 420nm
+// ─────────────────────────────────────────────────────────────────────────────
+G4double PMTSD::GetQE(G4double E_eV) const
+{
+  // Convert photon energy to wavelength in nm
+  if (E_eV <= 0.) return 0.;
+  G4double wl = 1239.84 / E_eV;   // nm
+
+  // Outside spectral range
+  if (wl < 270. || wl > 660.) return 0.;
+
+  // R1307 datasheet Figure 1 — digitised QE curve
+  // Bialkali on borosilicate, typical values
+  static const int N = 20;
+  static const G4double wls[N] = {
+    270., 290., 310., 330., 350.,
+    370., 390., 410., 420., 430.,
+    440., 460., 480., 500., 520.,
+    540., 560., 580., 600., 640.
+  };
+  static const G4double qe[N] = {
+    0.01, 0.04, 0.10, 0.18, 0.24,   // 270-350 nm: rising edge
+    0.27, 0.29, 0.30, 0.30, 0.30,   // 370-430 nm: plateau at peak 30%
+    0.29, 0.26, 0.22, 0.17, 0.13,   // 440-520 nm: falling
+    0.09, 0.06, 0.03, 0.01, 0.00    // 540-640 nm: tail
+  };
+
+  // Linear interpolation
+  for (int i = 0; i < N-1; ++i) {
+    if (wl >= wls[i] && wl < wls[i+1]) {
+      G4double f = (wl - wls[i]) / (wls[i+1] - wls[i]);
+      return qe[i] + f * (qe[i+1] - qe[i]);
+    }
+  }
+  return 0.;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+G4bool PMTSD::ProcessHits(G4Step* step, G4TouchableHistory*)
+{
+  G4Track* track = step->GetTrack();
+
+  // Only optical photons
+  if (track->GetDefinition() != G4OpticalPhoton::OpticalPhotonDefinition())
+    return false;
+
+  // ── TEMPORARY DEBUG ──────────────────────────────────────────────────────
+  // Unconditional counter — fires on EVERY step inside the photocathode
+  // volume, regardless of boundary status or QE outcome. This tells us
+  // definitively whether ProcessHits is being called at all.
+  static G4int debugCallCount = 0;
+  static G4int debugBoundaryCount = 0;
+  ++debugCallCount;
+  if (step->GetPreStepPoint()->GetStepStatus() == fGeomBoundary) {
+    ++debugBoundaryCount;
+  }
+  if (debugCallCount <= 20 || debugCallCount % 5000 == 0) {
+    G4cout << "[PMTSD DEBUG] ProcessHits call #" << debugCallCount
+           << "  preStepStatus=" << step->GetPreStepPoint()->GetStepStatus()
+           << "  (fGeomBoundary=" << fGeomBoundary << ")"
+           << "  boundaryHits=" << debugBoundaryCount
+           << "  trackID=" << track->GetTrackID()
+           << "  KE=" << track->GetKineticEnergy()/eV << " eV"
+           << "  volume=" << step->GetPreStepPoint()->GetPhysicalVolume()->GetName()
+           << G4endl;
+  }
+  // ── END TEMPORARY DEBUG ──────────────────────────────────────────────────
+  
+  // Only trigger on photon ENTERING the photocathode volume
+  if (step->GetPreStepPoint()->GetStepStatus() != fGeomBoundary)
+    return false;
+
+  G4double energy    = track->GetKineticEnergy();
+  G4double energy_eV = energy / eV;
+  G4double wl_nm     = (energy_eV > 0.) ? 1239.84 / energy_eV : 0.;
+
+  // Apply R1307 spectral QE
+  if (G4UniformRand() > GetQE(energy_eV)) {
+    track->SetTrackStatus(fStopAndKill);
+    return false;
+  }
+
+  // Tag photon origin process
+  G4bool isScint    = false;
+  G4bool isCerenkov = false;
+  G4bool isWLS      = false;
+  const G4VProcess* proc = track->GetCreatorProcess();
+  G4String procName = proc ? proc->GetProcessName() : "";
+  if      (procName == "Scintillation")              isScint    = true;
+  else if (procName == "Cerenkov")                   isCerenkov = true;
+  else if (procName.find("OpWLS") != G4String::npos) isWLS      = true;
+
+  G4int pmtNum = step->GetPreStepPoint()
+                     ->GetTouchableHandle()->GetCopyNumber();
+
+  auto* hit = new PMTHit();
+  hit->SetPMTNumber  (pmtNum);
+  hit->SetTime       (track->GetGlobalTime());
+  hit->SetEnergy     (energy);
+  hit->SetWavelength (wl_nm);
+  hit->SetPosition   (track->GetPosition());
+  hit->SetProcessName(procName);
+  hit->SetIsScint    (isScint);
+  hit->SetIsCherenkov(isCerenkov);
+  hit->SetIsWLS      (isWLS);
+  hit->SetTrackID    (track->GetTrackID());
+  fHitsCollection->insert(hit);
+
+  track->SetTrackStatus(fStopAndKill);
+  return true;
+}
+
+void PMTSD::EndOfEvent(G4HCofThisEvent*)
+{
+  if (verboseLevel > 1)
+    G4cout << "[PMTSD R1307] hits: " << fHitsCollection->entries() << G4endl;
+}
+
+
+/*
+// ============================================================================
+//  PMTSD.cc  –  PMT sensitive detector
+// ============================================================================
+
+#include "PMTSD.hh"
+#include "G4Step.hh"
+#include "G4Track.hh"
+#include "G4TrackStatus.hh"
+#include "G4SDManager.hh"
+#include "G4OpticalPhoton.hh"
+#include "G4HCofThisEvent.hh"
+#include "G4TouchableHistory.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include "Randomize.hh"
+#include <cmath>
+#include "G4VProcess.hh"
+#include "G4StepStatus.hh"    // needed for fGeomBoundary enum
+#include "G4LogicalVolume.hh"
+#include "G4VPhysicalVolume.hh"
+
+PMTSD::PMTSD(const G4String& name, const G4String& hcName)
+  : G4VSensitiveDetector(name)
+{
+  collectionName.insert(hcName);
+}
+ 
+void PMTSD::Initialize(G4HCofThisEvent* hce)
+{
+  fHitsCollection = new PMTHitsCollection(SensitiveDetectorName, collectionName[0]);
+  if (fHCID < 0)
+    fHCID = G4SDManager::GetSDMpointer()->GetCollectionID(fHitsCollection);
+  hce->AddHitsCollection(fHCID, fHitsCollection);
+}
+ 
+// ── Spectral QE: Hamamatsu R7081 bialkali ────────────────────────────────────
+G4double PMTSD::GetQE(G4double E_eV) const
+{
+  G4double wl_nm = (E_eV > 0.) ? 1239.84 / E_eV : 0.;
+  if (wl_nm < 270. || wl_nm > 640.) return 0.;
+ 
+  struct { G4double wl, qe; } table[] = {
+    {270.,.05},{290.,.10},{310.,.17},{330.,.23},{350.,.27},
+    {370.,.29},{390.,.30},{410.,.30},{420.,.30},{440.,.29},
+    {460.,.26},{480.,.22},{500.,.17},{520.,.13},{540.,.09},
+    {560.,.06},{580.,.04},{600.,.02},{620.,.01},{640.,.00}
+  };
+  const int n = sizeof(table)/sizeof(table[0]);
+  for (int i = 0; i < n-1; ++i) {
+    if (wl_nm >= table[i].wl && wl_nm < table[i+1].wl) {
+      G4double f = (wl_nm-table[i].wl)/(table[i+1].wl-table[i].wl);
+      return table[i].qe + f*(table[i+1].qe-table[i].qe);
+    }
+  }
+  return 0.;
+}
+ 
+G4bool PMTSD::ProcessHits(G4Step* step, G4TouchableHistory*)
+{
+  G4Track* track = step->GetTrack();
+  
+ // Only optical photons
+  if (track->GetDefinition() != G4OpticalPhoton::OpticalPhotonDefinition())
+    return false;
+
+  // Only detect photons ENTERING the PMT volume (fGeomBoundary step)
+  // This fires exactly once per photon arrival
+  if (step->GetPreStepPoint()->GetStepStatus() != fGeomBoundary)
+    return false;
+  
+  G4double energy    = track->GetKineticEnergy();
+  G4double energy_eV = energy / eV;
+  G4double wl_nm     = (energy_eV > 0.) ? 1239.84 / energy_eV : 0.;
+
+  // Apply wavelength-dependent QE (Monte Carlo)
+  if (G4UniformRand() > GetQE(energy_eV)) {
+    track->SetTrackStatus(fStopAndKill);
+    return false;
+  }
+ 
+  // ── Tag photon origin ─────────────────────────────────────────────────────
+  G4bool isScint    = false;
+  G4bool isCerenkov = false;
+  G4bool isWLS      = false;
+ 
+  // G4VProcess must be fully included (G4VProcess.hh) for GetProcessName()
+  const G4VProcess* creatorProc = track->GetCreatorProcess();
+  G4String procName = "";
+  if (creatorProc) {
+    procName = creatorProc->GetProcessName();
+    if      (procName == "Scintillation") isScint    = true;
+    else if (procName == "Cerenkov")      isCerenkov = true;
+    else if (procName.find("OpWLS") != G4String::npos) isWLS = true;
+  }
+ 
+  G4int pmtNum = step->GetPreStepPoint()
+                     ->GetTouchableHandle()
+                     ->GetCopyNumber();
+ 
+  auto* hit = new PMTHit();
+  hit->SetPMTNumber  (pmtNum);
+  hit->SetTime       (track->GetGlobalTime());
+  hit->SetEnergy     (energy);
+  hit->SetWavelength (wl_nm);
+  hit->SetPosition   (track->GetPosition());
+  hit->SetProcessName(procName);
+  hit->SetIsScint    (isScint);
+  hit->SetIsCherenkov(isCerenkov);
+  hit->SetIsWLS      (isWLS);
+  hit->SetTrackID    (track->GetTrackID());
+ 
+  fHitsCollection->insert(hit);
+  track->SetTrackStatus(fStopAndKill);
+  return true;
+}
+ 
+void PMTSD::EndOfEvent(G4HCofThisEvent*)
+{
+  if (verboseLevel > 1)
+    G4cout << "[PMTSD] " << fHitsCollection->entries() << " hits" << G4endl;
+}
+
+
+PMTSD::PMTSD(const G4String& name, const G4String& hcName)
+  : G4VSensitiveDetector(name)
+{
+  collectionName.insert(hcName);
+}
+
+void PMTSD::Initialize(G4HCofThisEvent* hce)
+{
+  fHitsCollection = new PMTHitsCollection(SensitiveDetectorName,
+                                          collectionName[0]);
+  if (fHCID < 0)
+    fHCID = G4SDManager::GetSDMpointer()->GetCollectionID(fHitsCollection);
+  hce->AddHitsCollection(fHCID, fHitsCollection);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GetQE – Realistic spectral QE for a typical 3-inch bialkali PMT
+//  Based on Hamamatsu R6233 / R7081 spectral response
+//  Peak QE ~30% at ~400 nm, falling to ~10% at 300 nm, ~5% at 600 nm
+// ─────────────────────────────────────────────────────────────────────────────
+G4double PMTSD::GetQE(G4double E_eV) const
+{
+  // Convert eV to nm
+  G4double wl_nm = (E_eV > 0.) ? 1239.84 / E_eV : 0.;
+
+  if (wl_nm < 270. || wl_nm > 640.) return 0.;
+
+  // Piecewise linear QE table (wl_nm, QE fraction)
+  // Source: Hamamatsu bialkali PMT data
+  struct { G4double wl, qe; } table[] = {
+    {270., 0.05}, {290., 0.10}, {310., 0.17}, {330., 0.23},
+    {350., 0.27}, {370., 0.29}, {390., 0.30}, {410., 0.30},
+    {420., 0.30}, {440., 0.29}, {460., 0.26}, {480., 0.22},
+    {500., 0.17}, {520., 0.13}, {540., 0.09}, {560., 0.06},
+    {580., 0.04}, {600., 0.02}, {620., 0.01}, {640., 0.00}
+  };
+  const int n = sizeof(table) / sizeof(table[0]);
+
+  for (int i = 0; i < n-1; ++i) {
+    if (wl_nm >= table[i].wl && wl_nm < table[i+1].wl) {
+      G4double frac = (wl_nm - table[i].wl) / (table[i+1].wl - table[i].wl);
+      return table[i].qe + frac * (table[i+1].qe - table[i].qe);
+    }
+  }
+  return 0.;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ProcessHits
+// ─────────────────────────────────────────────────────────────────────────────
+G4bool PMTSD::ProcessHits(G4Step* step, G4TouchableHistory*)
+{
+  G4Track* track = step->GetTrack();
+
+  // Only process optical photons
+  if (track->GetDefinition() != G4OpticalPhoton::OpticalPhotonDefinition())
+    return false;
+
+  // Get photon energy
+  G4double energy    = track->GetKineticEnergy();
+  G4double energy_eV = energy / eV;
+  G4double wl_nm     = (energy_eV > 0.) ? 1239.84 / energy_eV : 0.;
+
+  // Apply spectral QE
+  G4double qe = GetQE(energy_eV);
+  if (G4UniformRand() > qe) {
+    track->SetTrackStatus(fStopAndKill);
+    return false;
+  }
+
+  // ── Determine photon origin ────────────────────────────────────────────────
+  G4bool isScint   = false;
+  G4bool isCerenkov = false;
+  G4bool isWLS     = false;
+
+  const G4VProcess* creatorProc = track->GetCreatorProcess();
+  if (creatorProc) {
+    G4String procName = creatorProc->GetProcessName();
+    if      (procName == "Scintillation") isScint    = true;
+    else if (procName == "Cerenkov")      isCerenkov = true;
+    else if (procName.find("OpWLS") != G4String::npos) isWLS = true;
+  }
+
+  // ── PMT copy number (which PMT was hit) ───────────────────────────────────
+  G4int pmtNum = step->GetPreStepPoint()
+                     ->GetTouchableHandle()
+                     ->GetCopyNumber();
+
+  // ── Fill hit ──────────────────────────────────────────────────────────────
+  auto* hit = new PMTHit();
+  hit->SetPMTNumber    (pmtNum);
+  hit->SetTime         (track->GetGlobalTime());
+  hit->SetEnergy       (energy);
+  hit->SetWavelength   (wl_nm);
+  hit->SetPosition     (track->GetPosition());
+  hit->SetProcessName  (creatorProc ? creatorProc->GetProcessName() : "unknown");
+  hit->SetIsScint      (isScint);
+  hit->SetIsCherenkov  (isCerenkov);
+  hit->SetIsWLS        (isWLS);
+  hit->SetTrackID      (track->GetTrackID());
+
+  fHitsCollection->insert(hit);
+  track->SetTrackStatus(fStopAndKill);
+  return true;
+}
+
+void PMTSD::EndOfEvent(G4HCofThisEvent*)
+{
+  // Verbose summary if needed
+  if (verboseLevel > 1) {
+    G4cout << "[PMTSD] EndOfEvent: "
+           << fHitsCollection->entries() << " hits recorded" << G4endl;
+  }
+}
+*/

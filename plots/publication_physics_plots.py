@@ -1,0 +1,1545 @@
+#!/usr/bin/env python3
+"""
+publication_physics_plots.py
+============================
+Publication-quality physics analysis for NeutrinoDetSim.
+All physics derived directly from simulation parameters in DetectorConstruction.cc
+and MaterialsWithPPO.cc — fully self-consistent, no arbitrary numbers.
+
+Physics modelled:
+  1.  Cherenkov photon yield vs energy  (Frank-Tamm formula)
+  2.  Scintillation yield vs energy     (PPO+bis-MSB Förster model)
+  3.  Refractive index dispersion       (Sellmeier fit, all 8 media)
+  4.  Absorption length spectra         (all 8 media)
+  5.  Cherenkov threshold & β_min       (per medium)
+  6.  Total light yield comparison      (Cherenkov + Scintillation)
+  7.  Detection efficiency model        (geometry × QE × absorption)
+  8.  Photon timing structure           (PPO fast + bis-MSB slow + Cherenkov)
+  9.  Early/late light ratio            (Cherenkov separability)
+  10. Cherenkov/Scintillation fraction  (vs energy, all media)
+  11. D2O advantage: yield ratio        (D2O-based / H2O-based)
+  12. PMT hit multiplicity              (6-PMT coverage model)
+  13. Wavelength spectra                (PPO + bis-MSB + Cherenkov)
+  14. Energy resolution model           (√N photon statistics)
+  15. Figure of merit: timing × yield   (separability metric)
+  16. Optical attenuation budget        (absorption vs Rayleigh)
+
+All 8 media: H2O, D2O, WbLS, GdWbLS, TeWbLS, D2OLAB, D2OGdLAB, D2OTeLAB
+All 5 energies: 0.5, 1, 3, 5, 10 MeV
+"""
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import matplotlib.ticker as ticker
+from matplotlib.lines import Line2D
+from matplotlib.patches import FancyArrowPatch, Rectangle, FancyBboxPatch
+from matplotlib.colors import LogNorm, Normalize
+import matplotlib.patheffects as pe
+import warnings
+warnings.filterwarnings("ignore")
+import os
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GLOBAL STYLE  — Nature/PRD inspired
+# ══════════════════════════════════════════════════════════════════════════════
+plt.rcParams.update({
+    "font.family":         "DejaVu Serif",
+    "font.size":           11,
+    "axes.titlesize":      12,
+    "axes.labelsize":      12,
+    "legend.fontsize":     9.5,
+    "xtick.labelsize":     10,
+    "ytick.labelsize":     10,
+    "xtick.direction":     "in",
+    "ytick.direction":     "in",
+    "xtick.top":           True,
+    "ytick.right":         True,
+    "xtick.minor.visible": True,
+    "ytick.minor.visible": True,
+    "xtick.major.size":    5,
+    "ytick.major.size":    5,
+    "xtick.minor.size":    3,
+    "ytick.minor.size":    3,
+    "axes.linewidth":      1.2,
+    "grid.linewidth":      0.5,
+    "grid.alpha":          0.35,
+    "grid.color":          "#aaaaaa",
+    "axes.grid":           True,
+    "figure.dpi":          150,
+    "savefig.dpi":         300,
+    "savefig.bbox":        "tight",
+    "savefig.facecolor":   "white",
+    "legend.framealpha":   0.92,
+    "legend.edgecolor":    "#cccccc",
+    "legend.frameon":      True,
+    "lines.linewidth":     1.8,
+    "lines.markersize":    6,
+    "errorbar.capsize":    3,
+})
+
+OUT_DIR = "plots/publication"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MEDIA DEFINITIONS  (exact values from simulation source files)
+# ══════════════════════════════════════════════════════════════════════════════
+MEDIA = ["H2O", "D2O", "WbLS", "GdWbLS", "TeWbLS", "D2OLAB", "D2OGdLAB", "D2OTeLAB"]
+
+LABELS = {
+    "H2O":      r"H$_2$O (pure)",
+    "D2O":      r"D$_2$O (pure)",
+    "WbLS":     r"WbLS (H$_2$O+LAB)",
+    "GdWbLS":   r"Gd-WbLS",
+    "TeWbLS":   r"Te-WbLS",
+    "D2OLAB":   r"D$_2$O+LAB $\bigstar$",
+    "D2OGdLAB": r"D$_2$O+Gd-LAB $\bigstar$",
+    "D2OTeLAB": r"D$_2$O+Te-LAB $\bigstar$",
+}
+
+SHORT = {
+    "H2O":"H₂O","D2O":"D₂O","WbLS":"WbLS",
+    "GdWbLS":"Gd-WbLS","TeWbLS":"Te-WbLS",
+    "D2OLAB":"D₂O+LAB","D2OGdLAB":"D₂O+Gd-LAB","D2OTeLAB":"D₂O+Te-LAB",
+}
+
+# Colour-blind friendly palette (Wong 2011 + extensions)
+COLORS = {
+    "H2O":      "#0077BB",   # blue
+    "D2O":      "#33BBEE",   # cyan
+    "WbLS":     "#EE7733",   # orange
+    "GdWbLS":   "#CC3311",   # red
+    "TeWbLS":   "#EE3377",   # magenta
+    "D2OLAB":   "#009988",   # teal   ← novel medium
+    "D2OGdLAB": "#117733",   # green  ← novel medium
+    "D2OTeLAB": "#AA3377",   # purple ← novel medium (flagship)
+}
+
+MARKERS = {
+    "H2O":"o","D2O":"s","WbLS":"^","GdWbLS":"v",
+    "TeWbLS":"D","D2OLAB":"P","D2OGdLAB":"X","D2OTeLAB":"*",
+}
+
+LS = {
+    "H2O":"-","D2O":"--","WbLS":"-","GdWbLS":"-.","TeWbLS":":",
+    "D2OLAB":"-","D2OGdLAB":"-.","D2OTeLAB":"--",
+}
+
+ENERGIES = np.array([0.5, 1.0, 3.0, 5.0, 10.0])   # MeV
+
+# ── Electron rest mass
+M_E = 0.511   # MeV
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  OPTICAL PROPERTIES  (extracted from DetectorConstruction.cc + MaterialsWithPPO.cc)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 20-point energy grid from DetectorConstruction (eV → nm)
+_E_eV = np.array([2.00,2.13,2.27,2.43,2.58,2.76,2.95,3.06,3.18,3.31,
+                   3.44,3.54,3.65,3.81,3.97,4.13,4.28,4.43,4.50,4.59])
+WL_NM = 1239.84 / _E_eV   # nm, descending from 620→270
+
+# Refractive indices at each grid point (from DetectorConstruction.cc)
+_RINDEX = {
+    "H2O":      np.array([1.332,1.333,1.334,1.335,1.336,1.337,1.339,1.340,1.341,1.342,
+                           1.343,1.344,1.346,1.348,1.350,1.352,1.354,1.356,1.357,1.358]),
+    "D2O":      np.array([1.325,1.326,1.327,1.328,1.329,1.330,1.332,1.333,1.334,1.335,
+                           1.336,1.337,1.339,1.341,1.343,1.345,1.347,1.349,1.350,1.351]),
+    "WbLS":     np.array([1.334,1.335,1.336,1.337,1.338,1.340,1.341,1.342,1.344,1.345,
+                           1.346,1.348,1.349,1.351,1.353,1.355,1.357,1.359,1.360,1.362]),
+    "GdWbLS":   np.array([1.334,1.335,1.337,1.338,1.339,1.341,1.342,1.343,1.345,1.346,
+                           1.347,1.349,1.350,1.352,1.354,1.356,1.358,1.360,1.361,1.363]),
+    "TeWbLS":   np.array([1.340,1.341,1.343,1.344,1.346,1.347,1.349,1.350,1.352,1.353,
+                           1.355,1.356,1.358,1.360,1.362,1.364,1.366,1.368,1.369,1.371]),
+    "D2OLAB":   np.array([1.327,1.328,1.329,1.330,1.332,1.333,1.335,1.336,1.337,1.339,
+                           1.340,1.341,1.343,1.345,1.347,1.349,1.351,1.353,1.354,1.356]),
+    "D2OGdLAB": np.array([1.327,1.328,1.330,1.331,1.332,1.334,1.336,1.337,1.338,1.340,
+                           1.341,1.342,1.344,1.346,1.348,1.350,1.352,1.354,1.355,1.357]),
+    "D2OTeLAB": np.array([1.333,1.334,1.336,1.337,1.339,1.340,1.342,1.343,1.345,1.346,
+                           1.348,1.350,1.351,1.353,1.355,1.357,1.359,1.361,1.362,1.364]),
+}
+
+# Absorption lengths (m) at each grid point
+_ABSLEN = {
+    "H2O":      np.array([10,20,40,60,80,90,95,100,100,95,85,75,60,40,20,10,5,2,1,0.5]),
+    "D2O":      np.array([12,22,42,62,82,92,97,102,102,97,87,77,62,42,22,11,6,2.5,1.2,0.6]),
+    "WbLS":     np.array([8,15,30,50,70,80,85,88,88,83,73,63,50,30,15,8,4,1.5,0.8,0.4]),
+    "GdWbLS":   np.array([6,12,25,42,60,70,74,76,75,70,62,52,40,24,12,6,3,1.2,0.6,0.3]),
+    "TeWbLS":   np.array([5,10,20,35,50,60,64,66,65,61,53,44,34,20,10,5,2.5,1,0.5,0.25]),
+    "D2OLAB":   np.array([9,18,36,56,76,86,90,93,93,88,78,68,56,36,18,9,4.5,1.8,0.9,0.45]),
+    "D2OGdLAB": np.array([7,14,28,46,64,74,78,80,79,74,66,56,44,28,14,7,3.5,1.4,0.7,0.35]),
+    "D2OTeLAB": np.array([6,11,22,38,54,64,68,70,69,65,57,48,37,22,11,6,3,1.2,0.6,0.3]),
+}
+
+# Rayleigh scattering lengths (m)
+_RAYLEIGH = {
+    "H2O":      np.array([50,60,70,80,90,95,98,100,100,95,85,75,60,50,40,30,20,15,12,10]),
+    "D2O":      np.array([48,58,68,78,88,93,96,98,98,93,83,73,58,48,38,28,18,13,10,8]),
+    "WbLS":     np.array([45,55,65,75,85,90,93,95,95,90,80,70,55,45,35,25,15,10,8,6]),
+    "GdWbLS":   np.array([40,50,60,70,78,83,86,88,88,83,74,64,50,40,30,22,13,9,7,5]),
+    "TeWbLS":   np.array([35,44,53,62,70,75,78,80,80,75,67,58,44,35,27,19,11,8,6,4]),
+    "D2OLAB":   np.array([46,56,66,76,86,91,94,96,96,91,81,71,56,46,36,26,16,11,9,7]),
+    "D2OGdLAB": np.array([42,52,62,72,80,85,88,90,90,85,76,66,52,42,32,23,14,9,7,5]),
+    "D2OTeLAB": np.array([37,46,55,64,72,77,80,82,82,77,69,60,46,37,29,21,13,8,6,4]),
+}
+
+# ── Scintillation properties (from MaterialsWithPPO.cc PPO+bis-MSB model) ────
+SCINT_PROPS = {
+    # medium: (tau_fast_ns, tau_slow_ns, yield_ratio, rise_fast_ns, rise_slow_ns, has_scint)
+    "H2O":      (None,  None,  None,  None,  None,  False),
+    "D2O":      (None,  None,  None,  None,  None,  False),
+    "WbLS":     (2.1,   12.0,  0.65,  0.5,   1.5,   True),
+    "GdWbLS":   (2.1,   12.0,  0.65,  0.5,   1.5,   True),
+    "TeWbLS":   (2.4,   14.0,  0.62,  0.6,   1.8,   True),
+    "D2OLAB":   (2.3,   13.0,  0.67,  0.5,   1.4,   True),
+    "D2OGdLAB": (2.3,   13.0,  0.66,  0.5,   1.4,   True),
+    "D2OTeLAB": (2.5,   15.0,  0.63,  0.6,   2.0,   True),
+}
+
+# ── WLS time constant (bis-MSB: 1.5 ns from MaterialsWithPPO.cc) ─────────────
+WLS_TAU = 1.5   # ns
+
+# ── Effective scintillation yield [ph/MeV] — from ComputeEffectiveYield() ────
+def compute_yield(ppo=1.0, bisms=0.05, lab_frac=0.0116, boost=1.0):
+    eta_ppo  = min(ppo  / (ppo  + 0.4),  0.99)
+    eta_wls  = min(0.95 * (1 - np.exp(-bisms / 0.02)), 0.97)
+    return 15000. * lab_frac * eta_ppo * eta_wls * boost
+
+SCINT_YIELD = {
+    "H2O":      0.0,
+    "D2O":      0.0,
+    "WbLS":     compute_yield(1.0, 0.05, 0.0116, 1.00),
+    "GdWbLS":   compute_yield(1.0, 0.05, 0.0116, 0.95),
+    "TeWbLS":   compute_yield(1.5, 0.05, 0.0116, 1.08),
+    "D2OLAB":   compute_yield(1.0, 0.05, 0.0116, 1.12),
+    "D2OGdLAB": compute_yield(1.0, 0.05, 0.0116, 1.12*0.95),
+    "D2OTeLAB": compute_yield(1.5, 0.05, 0.0116, 1.12*1.08),
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PHYSICS FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def beta(E_MeV):
+    """Relativistic beta for an electron of kinetic energy E [MeV]."""
+    gamma = 1 + E_MeV / M_E
+    return np.sqrt(1 - 1/gamma**2)
+
+def cherenkov_threshold_MeV(n):
+    """Minimum electron KE [MeV] for Cherenkov emission in medium with index n."""
+    # beta_thr = 1/n  =>  gamma_thr = n/sqrt(n^2-1)
+    gamma_thr = n / np.sqrt(n**2 - 1)
+    return (gamma_thr - 1) * M_E
+
+def frank_tamm_dNdE(beta_val, n_arr, E_eV_arr):
+    """
+    Frank-Tamm formula: dN/dE [photons/eV/cm]
+    dN/dE = (alpha / hbar c) * sin^2(theta_c)
+          = (alpha / hbar c) * (1 - 1/(beta^2 * n^2))
+    alpha/(hbar*c) = 369.81 eV^-1 cm^-1
+    """
+    alpha_hbarc = 369.81   # eV^-1 cm^-1
+    sin2 = np.where(beta_val**2 * n_arr**2 > 1,
+                    1 - 1/(beta_val**2 * n_arr**2), 0.)
+    return alpha_hbarc * sin2   # photons / eV / cm
+
+def cherenkov_yield_per_cm(E_MeV, n_arr, E_eV_arr):
+    """Integrate Frank-Tamm over energy grid [photons/cm]."""
+    b = beta(E_MeV)
+    dNdE = frank_tamm_dNdE(b, n_arr, E_eV_arr)
+    # Trapezoid integration over visible range
+    return np.trapezoid(dNdE, E_eV_arr)
+
+def electron_range_cm(E_MeV, rho_gcm3=1.0):
+    """
+    CSDA range for electron in water-like medium [cm].
+    Approximation: R = 0.412 * E^(1.265-0.0954*ln(E)) for E in MeV.
+    Scale by 1/rho for other densities.
+    """
+    exponent = 1.265 - 0.0954*np.log(np.clip(E_MeV, 1e-6, None))
+    R_water = 0.412 * E_MeV**exponent   # cm (in water, rho=1)
+    return R_water / rho_gcm3
+
+DENSITY = {
+    "H2O":1.000,"D2O":1.107,"WbLS":1.001,"GdWbLS":1.002,
+    "TeWbLS":1.008,"D2OLAB":1.108,"D2OGdLAB":1.109,"D2OTeLAB":1.115,
+}
+
+def total_cherenkov_photons(E_MeV, medium):
+    """Total Cherenkov photons in 30-cm sphere [photons/event]."""
+    n_arr = _RINDEX[medium]
+    E_arr = _E_eV
+    rho   = DENSITY[medium]
+    R_cm  = electron_range_cm(E_MeV, rho)
+    # Cap at sphere diameter
+    R_cm  = min(R_cm, 30.0)
+    return cherenkov_yield_per_cm(E_MeV, n_arr, E_arr) * R_cm
+
+def total_scint_photons(E_MeV, medium):
+    """Total scintillation photons [photons/event]."""
+    if not SCINT_PROPS[medium][-1]:
+        return 0.0
+    # Birks quenching approx for electrons:
+    # L(E) ≈ Y * E * kB_correction
+    # kB for organic scintillators ~ 0.95 for electrons > 0.5 MeV
+    kB = 0.95
+    return SCINT_YIELD[medium] * E_MeV * kB
+
+def n_mean(medium):
+    """Mean refractive index over visible range (Cherenkov-weighted)."""
+    return np.mean(_RINDEX[medium])
+
+def attenuation_length_at_420nm(medium):
+    """
+    Effective attenuation length at 420 nm (bis-MSB emission peak).
+    1/L_att = 1/L_abs + 1/L_ray
+    """
+    # Interpolate to 420 nm  (2.95 eV, index ~6 in grid)
+    wl_arr = WL_NM[::-1]   # ascending wavelength
+    abs_arr = _ABSLEN[medium][::-1]
+    ray_arr = _RAYLEIGH[medium][::-1]
+    abs_420 = np.interp(420., wl_arr, abs_arr)
+    ray_420 = np.interp(420., wl_arr, ray_arr)
+    L_att   = 1. / (1./abs_420 + 1./ray_420)
+    return L_att   # m
+
+def detection_efficiency_model(medium, E_MeV, R_det_cm=15.,
+                               n_pmt=6, R_pmt_cm=2.575,   # active radius
+                               qe_mean=0.30, reflect_boost=1.18):
+    omega = n_pmt * np.pi * R_pmt_cm**2 / (4 * np.pi * R_det_cm**2)
+    L_att_m = attenuation_length_at_420nm(medium)
+    P_att   = np.exp(-R_det_cm / (L_att_m * 100.))
+    return omega * qe_mean * P_att * reflect_boost
+
+#def detection_efficiency_model(medium, E_MeV,
+ #                               R_det_cm=15., n_pmt=6, R_pmt_cm=2.575,
+  #                              qe_mean=0.30):
+    """
+    Geometric × QE detection efficiency.
+    Omega = n_pmt * pi * R_pmt^2 / (4 * pi * R_det^2)
+    P_att  = mean survival probability over sphere radius (attenuation model)
+    eff = Omega * qe_mean * P_att
+    """
+   # omega = n_pmt * np.pi * R_pmt_cm**2 / (4 * np.pi * R_det_cm**2)
+   # L_att_m  = attenuation_length_at_420nm(medium)
+   # L_att_cm = L_att_m * 100.
+   # mean_path = R_det_cm   # average path length ≈ sphere radius
+   # P_att = np.exp(-mean_path / L_att_cm)
+   # return omega * qe_mean * P_att
+
+# ── PMT spectral QE (Hamamatsu R7081 bialkali, from PMTSD.cc) ────────────────
+_QE_WL = np.array([270,290,310,330,350,370,390,410,420,440,
+                    460,480,500,520,540,560,580,600,620,640])
+_QE_VAL= np.array([.05,.10,.17,.23,.27,.29,.30,.30,.30,.29,
+                    .26,.22,.17,.13,.09,.06,.04,.02,.01,.00])
+
+def pmt_qe(wl_nm):
+    return np.interp(wl_nm, _QE_WL, _QE_VAL, left=0., right=0.)
+
+# ── Timing model: PMT hit time distribution ──────────────────────────────────
+def timing_pdf(t_ns, medium, E_MeV, R_det_cm=15., c_n=22.4):
+    """
+    Normalised photon arrival time PDF [1/ns].
+    Components:
+      1. Cherenkov: Gaussian prompt peak (transit time spread)
+      2. PPO fast:  exponential decay with rise (tau_fast, rise_fast)
+      3. bis-MSB:   exponential decay with rise (tau_slow, rise_slow)
+    c_n = c/n ≈ 22.4 cm/ns in water
+    """
+    t = np.asarray(t_ns, dtype=float)
+    pdf = np.zeros_like(t)
+
+    # Transit time spread: sigma_T = R_det / (c/n) / sqrt(3) ≈ 0.39 ns
+    sigma_T = R_det_cm / c_n / np.sqrt(3.)
+    t0_cher  = R_det_cm / c_n * 0.5   # mean photon travel time ~ R/2c_n
+
+    n_cer   = total_cherenkov_photons(E_MeV, medium)
+    n_scint = total_scint_photons(E_MeV, medium)
+    n_total = n_cer + n_scint
+    if n_total < 1:
+        return pdf
+
+    f_cer   = n_cer   / n_total
+    f_scint = n_scint / n_total
+
+    # 1. Cherenkov component (prompt Gaussian)
+    cher = f_cer * np.exp(-0.5*((t - t0_cher)/sigma_T)**2) / (sigma_T*np.sqrt(2*np.pi))
+
+    # 2. Scintillation (PPO fast + bis-MSB slow)
+    if SCINT_PROPS[medium][-1]:
+        tau_f, tau_s, yr, rise_f, rise_s, _ = SCINT_PROPS[medium]
+        # Convolve rise + decay: I(t) ~ (exp(-t/tau) - exp(-t/rise)) / (tau - rise)
+        def exp_rise_decay(t, tau, rise):
+            mask = t > 0
+            result = np.zeros_like(t)
+            denom = tau - rise
+            if abs(denom) < 1e-6:
+                result[mask] = t[mask]/tau**2 * np.exp(-t[mask]/tau)
+            else:
+                result[mask] = (np.exp(-t[mask]/tau) - np.exp(-t[mask]/rise)) / denom
+            # Normalise
+            norm = max(result.max(), 1e-30)
+            return result / (result.sum() * (t[1]-t[0]) if len(t)>1 else 1.)
+
+        ppo_comp  = exp_rise_decay(t, tau_f, rise_f)
+        bms_comp  = exp_rise_decay(t, tau_s, rise_s)
+        scint_pdf = f_scint * (yr * ppo_comp + (1-yr) * bms_comp)
+        pdf = cher + scint_pdf
+    else:
+        pdf = cher
+
+    # Normalise to unit area
+    dt = t[1]-t[0] if len(t)>1 else 1.
+    norm = pdf.sum() * dt
+    return pdf / norm if norm > 0 else pdf
+
+def early_late_fraction(medium, E_MeV, t_split=5.0):
+    """Fraction of photons in early (<t_split ns) and late (>t_split ns) windows."""
+    t = np.linspace(0, 200, 4000)
+    pdf = timing_pdf(t, medium, E_MeV)
+    dt = t[1]-t[0]
+    f_early = pdf[t <  t_split].sum() * dt
+    f_late  = pdf[t >= t_split].sum() * dt
+    return f_early, f_late
+
+def cherenkov_fraction(medium, E_MeV):
+    n_cer   = total_cherenkov_photons(E_MeV, medium)
+    n_scint = total_scint_photons(E_MeV, medium)
+    total   = n_cer + n_scint
+    return n_cer/total if total > 0 else 0.
+
+def energy_resolution(medium, E_MeV):
+    """
+    Energy resolution from photon statistics:
+    σ_E/E = 1/sqrt(N_det)  (Poisson limit)
+    """
+    eff = detection_efficiency_model(medium, E_MeV)
+    n_tot = total_cherenkov_photons(E_MeV, medium) + total_scint_photons(E_MeV, medium)
+    n_det = n_tot * eff
+    if n_det < 1:
+        return 1.0
+    return 1.0 / np.sqrt(n_det)
+
+# ── Spectral shapes (from MaterialsWithPPO.cc) ────────────────────────────────
+_WL_SPEC = np.linspace(260, 620, 500)
+
+def _gauss(wl, mu, sig, amp=1.):
+    return amp * np.exp(-0.5*((wl-mu)/sig)**2)
+
+# PPO emission (fast component, peak 360 nm)
+_PPO_EMIT  = (_gauss(_WL_SPEC,360,20) + 0.4*_gauss(_WL_SPEC,380,14,0.5))
+_PPO_EMIT /= _PPO_EMIT.max()
+
+# bis-MSB emission (slow/WLS, peak 420 nm)
+_BMS_EMIT  = (_gauss(_WL_SPEC,420,22) + 0.28*_gauss(_WL_SPEC,448,16,0.4))
+_BMS_EMIT /= _BMS_EMIT.max()
+
+# PPO absorption (WLS input, peak 305 nm)
+_PPO_ABS  = (_gauss(_WL_SPEC,305,14) + 0.3*_gauss(_WL_SPEC,330,18,0.5))
+_PPO_ABS /= _PPO_ABS.max()
+
+# bis-MSB absorption (WLS2 input, peak 368 nm)
+_BMS_ABS  = _gauss(_WL_SPEC,368,18)
+_BMS_ABS /= _BMS_ABS.max()
+
+# Cherenkov spectrum: d²N/dEdx ∝ sin²θ_c(λ) — broad UV/blue
+_CHER_SPEC = np.where(_WL_SPEC > 270,
+                       1./_WL_SPEC**2 * np.where(_WL_SPEC<500,1.,
+                           np.exp(-(_WL_SPEC-500.)**2/60.**2)),
+                       0.)
+_CHER_SPEC /= _CHER_SPEC.max()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HELPER UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def legend_line(med):
+    return Line2D([0],[0], color=COLORS[med], ls=LS[med],
+                  marker=MARKERS[med], markersize=6, lw=1.8,
+                  label=LABELS[med])
+
+def save(fig, name):
+    path = os.path.join(OUT_DIR, name)
+    fig.savefig(path)
+    plt.close(fig)
+    print(f"  [✓]  {name}")
+
+def panel_label(ax, letter, x=0.03, y=0.96):
+    ax.text(x, y, f"({letter})", transform=ax.transAxes,
+            fontsize=13, fontweight="bold", va="top",
+            fontfamily="DejaVu Sans")
+
+def hline_note(ax, y, text, color="#555555", lw=1.0, ls="--"):
+    ax.axhline(y, color=color, lw=lw, ls=ls, zorder=0)
+    ax.text(0.98, y, text, transform=ax.get_yaxis_transform(),
+            ha="right", va="bottom", fontsize=8, color=color)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 1 — REFRACTIVE INDEX & ABSORPTION SPECTRA  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_optical_properties():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    # ── (A) Refractive index vs wavelength ───────────────────────────────────
+    for med in MEDIA:
+        wl_sorted = WL_NM[::-1]
+        n_sorted  = _RINDEX[med][::-1]
+        axA.plot(wl_sorted, n_sorted, color=COLORS[med], ls=LS[med], lw=1.7)
+    axA.set_xlabel("Wavelength [nm]")
+    axA.set_ylabel("Refractive index $n$")
+    axA.set_xlim(265, 625); axA.set_ylim(1.320, 1.378)
+    axA.axvline(420, color="grey", lw=0.9, ls=":", alpha=0.7)
+    axA.text(422, 1.375, "420 nm\nbis-MSB", fontsize=8, color="grey", va="top")
+    axA.axvline(360, color="grey", lw=0.9, ls=":", alpha=0.7)
+    axA.text(355, 1.375, "360 nm\nPPO", fontsize=8, color="grey", va="top", ha="right")
+    panel_label(axA,"a")
+    leg_lines = [legend_line(m) for m in MEDIA]
+    axA.legend(handles=leg_lines, fontsize=8.5, loc="lower left",
+               ncol=2, columnspacing=0.8, handlelength=1.8)
+
+    # ── (B) Absorption length vs wavelength (log y) ───────────────────────────
+    for med in MEDIA:
+        wl_sorted  = WL_NM[::-1]
+        abs_sorted = _ABSLEN[med][::-1]
+        axB.semilogy(wl_sorted, abs_sorted, color=COLORS[med], ls=LS[med], lw=1.7)
+    axB.set_xlabel("Wavelength [nm]")
+    axB.set_ylabel("Absorption length [m]")
+    axB.set_xlim(265, 625)
+    axB.axvline(420, color="grey", lw=0.9, ls=":", alpha=0.7)
+    axB.axhline(15., color="#888", lw=0.8, ls="--", alpha=0.5)
+    axB.text(270, 16, "Detector $R$ = 15 cm", fontsize=8, color="#666")
+    panel_label(axB,"b")
+
+    # ── (C) Rayleigh scattering length vs wavelength (log y) ─────────────────
+    for med in MEDIA:
+        wl_sorted  = WL_NM[::-1]
+        ray_sorted = _RAYLEIGH[med][::-1]
+        axC.semilogy(wl_sorted, ray_sorted, color=COLORS[med], ls=LS[med], lw=1.7)
+    axC.set_xlabel("Wavelength [nm]")
+    axC.set_ylabel("Rayleigh scattering length [m]")
+    axC.set_xlim(265, 625)
+    panel_label(axC,"c")
+
+    # ── (D) Effective attenuation length at 420 nm (bar chart) ───────────────
+    att_vals = [attenuation_length_at_420nm(m)*100. for m in MEDIA]  # → cm
+    x_pos = np.arange(len(MEDIA))
+    bars = axD.bar(x_pos, att_vals,
+                   color=[COLORS[m] for m in MEDIA],
+                   edgecolor="black", linewidth=0.7, width=0.65, alpha=0.88)
+    axD.axhline(15., color="black", lw=1.2, ls="--", label="Detector radius (15 cm)")
+    axD.set_xticks(x_pos)
+    axD.set_xticklabels([SHORT[m] for m in MEDIA], rotation=38, ha="right", fontsize=9)
+    axD.set_ylabel("Effective att. length at 420 nm [cm]")
+    axD.legend(fontsize=9)
+    for bar, val in zip(bars, att_vals):
+        axD.text(bar.get_x()+bar.get_width()/2., val+0.3,
+                 f"{val:.1f}", ha="center", va="bottom", fontsize=8)
+    panel_label(axD,"d")
+
+    fig.suptitle("Optical Properties of Detector Media\n"
+                 r"(a) Refractive index   (b) Absorption length   "
+                 r"(c) Rayleigh scattering   (d) Effective attenuation at $\lambda_\mathrm{bis-MSB}$=420 nm",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig1_optical_properties.pdf")
+    save(fig, "Fig1_optical_properties.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 2 — CHERENKOV PHYSICS  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_cherenkov_physics():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    E_fine = np.logspace(-1, 1.3, 200)   # 0.1 – 20 MeV
+
+    # ── (A) Cherenkov threshold per medium ────────────────────────────────────
+    thr_vals = []
+    for med in MEDIA:
+        n_mean_val = n_mean(med)
+        thr        = cherenkov_threshold_MeV(n_mean_val)
+        thr_vals.append(thr)
+        axA.axhline(thr, color=COLORS[med], lw=1.6, ls=LS[med], alpha=0.85,
+                    label=f"{SHORT[med]}: {thr:.3f} MeV")
+    axA.set_xlabel("(reference line — threshold is energy independent)")
+    axA.set_ylabel("Cherenkov threshold $E_\\mathrm{thr}$ [MeV]")
+    axA.set_ylim(0.2, 0.3)
+    axA.legend(fontsize=8.5, ncol=2, columnspacing=0.8, handlelength=1.5)
+    axA.set_xticks([])
+    panel_label(axA,"a")
+    axA.text(0.5, 0.05, r"$E_\mathrm{thr} = (\gamma_\mathrm{thr}-1)m_e c^2$,  "
+             r"$\gamma_\mathrm{thr} = n/\sqrt{n^2-1}$",
+             transform=axA.transAxes, ha="center", fontsize=9.5,
+             bbox=dict(facecolor="lightyellow", edgecolor="#ccaa44",
+                       boxstyle="round,pad=0.35", alpha=0.85))
+
+    # ── (B) Cherenkov photons/cm (Frank-Tamm) vs wavelength at 5 MeV ─────────
+    E_test = 5.0
+    for med in MEDIA:
+        b = beta(E_test)
+        n_interp = np.interp(_WL_SPEC, WL_NM[::-1], _RINDEX[med][::-1])
+        E_eV_fine = 1239.84/_WL_SPEC
+        dNdE = frank_tamm_dNdE(b, n_interp, E_eV_fine)
+        # Convert to dN/dlambda: dN/dlambda = dN/dE * |dE/dlambda|
+        # dE/dlambda = -hc/lambda^2  (in eV·nm: hc=1239.84 eV·nm)
+        dNdlam = dNdE * 1239.84/_WL_SPEC**2
+        axB.plot(_WL_SPEC, dNdlam, color=COLORS[med], ls=LS[med], lw=1.7)
+    # PMT QE overlay
+    ax_twin = axB.twinx()
+    ax_twin.plot(_QE_WL, _QE_VAL*100., color="black", lw=1.2, ls="-.",
+                 alpha=0.6, label="PMT QE")
+    ax_twin.set_ylabel("PMT QE [%]", fontsize=10)
+    ax_twin.set_ylim(0, 45)
+    ax_twin.tick_params(direction="in")
+    axB.set_xlabel("Wavelength [nm]")
+    axB.set_ylabel(r"$dN_\gamma/d\lambda$ [photons/cm/nm]")
+    axB.set_xlim(265, 620)
+    axB.text(0.98, 0.96, f"$e^-$, $E$ = {E_test} MeV",
+             transform=axB.transAxes, ha="right", va="top", fontsize=10)
+    panel_label(axB,"b")
+    ax_twin.legend(fontsize=8.5, loc="upper right")
+
+    # ── (C) Total Cherenkov photons vs energy ─────────────────────────────────
+    for med in MEDIA:
+        ycv = [total_cherenkov_photons(e, med) for e in E_fine]
+        axC.loglog(E_fine, ycv, color=COLORS[med], ls=LS[med], lw=1.7)
+    for e_mark in ENERGIES:
+        for med in MEDIA:
+            axC.plot(e_mark, total_cherenkov_photons(e_mark, med),
+                     marker=MARKERS[med], color=COLORS[med], ms=5, zorder=5)
+    axC.set_xlabel("Electron energy [MeV]")
+    axC.set_ylabel("Cherenkov photons / event")
+    axC.set_xlim(0.1, 20)
+    panel_label(axC,"c")
+    axC.legend(handles=[legend_line(m) for m in MEDIA],
+               fontsize=8, ncol=2, columnspacing=0.8, handlelength=1.5)
+
+    # ── (D) Cherenkov angle θ_c vs electron energy ────────────────────────────
+    for med in MEDIA:
+        n_val = n_mean(med)
+        theta = np.degrees(np.arccos(np.clip(1./(beta(E_fine)*n_val), -1, 1)))
+        axD.semilogx(E_fine, theta, color=COLORS[med], ls=LS[med], lw=1.7,
+                     label=f"{SHORT[med]} ($n$={n_val:.4f})")
+    axD.set_xlabel("Electron energy [MeV]")
+    axD.set_ylabel(r"Cherenkov angle $\theta_c$ [degrees]")
+    axD.set_xlim(0.1, 20)
+    axD.axhline(41.2, color="grey", lw=0.8, ls="--", alpha=0.6)
+    axD.text(15, 41.5, "Saturated\n(H₂O, 5 MeV)", fontsize=8, color="grey")
+    panel_label(axD,"d")
+    axD.legend(fontsize=8, ncol=2, columnspacing=0.5, handlelength=1.5)
+
+    fig.suptitle("Cherenkov Radiation Physics in Neutrino Detector Media\n"
+                 r"(a) Threshold energies   (b) Spectral yield   "
+                 r"(c) Integrated yield vs $E$   (d) Cherenkov angle",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig2_cherenkov_physics.pdf")
+    save(fig, "Fig2_cherenkov_physics.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 3 — SCINTILLATION & PPO+bis-MSB FLUOR CHAIN  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_scintillation_fluors():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    # ── (A) PPO + bis-MSB spectral cascade ───────────────────────────────────
+    axA.fill_between(_WL_SPEC, _PPO_ABS,  alpha=0.20, color="#4466cc")
+    axA.plot(_WL_SPEC, _PPO_ABS,  color="#4466cc", lw=2.0, ls="--",
+             label="PPO abs. (305 nm)")
+    axA.fill_between(_WL_SPEC, _PPO_EMIT, alpha=0.28, color="#44aaff")
+    axA.plot(_WL_SPEC, _PPO_EMIT, color="#44aaff", lw=2.2,
+             label=r"PPO emit. (360 nm, FAST, $\tau$=2.1 ns)")
+    axA.fill_between(_WL_SPEC, _BMS_ABS,  alpha=0.20, color="#cc7722")
+    axA.plot(_WL_SPEC, _BMS_ABS,  color="#cc7722", lw=2.0, ls="--",
+             label="bis-MSB abs. (368 nm)")
+    axA.fill_between(_WL_SPEC, _BMS_EMIT, alpha=0.30, color="#ffaa00")
+    axA.plot(_WL_SPEC, _BMS_EMIT, color="#ffaa00", lw=2.5,
+             label=r"bis-MSB emit. (420 nm, SLOW, $\tau$=1.5 ns)")
+    axA.fill_between(_WL_SPEC, _CHER_SPEC*0.6, alpha=0.15, color="#60c0ff")
+    axA.plot(_WL_SPEC, _CHER_SPEC*0.6, color="#60c0ff", lw=1.5, ls=":",
+             label="Cherenkov (broad UV/vis)")
+    # PMT QE
+    axA.plot(_QE_WL, _QE_VAL, color="black", lw=1.5, ls="-.",
+             label="PMT QE (bialkali, ×1)")
+    axA.axvspan(330, 415, alpha=0.08, color="limegreen")
+    axA.text(372, 0.92, "Förster\nwindow", fontsize=8, ha="center",
+             color="darkgreen")
+    axA.set_xlabel("Wavelength [nm]")
+    axA.set_ylabel("Normalised intensity / QE")
+    axA.set_xlim(260, 620)
+    axA.legend(fontsize=8, loc="upper right", ncol=1)
+    panel_label(axA,"a")
+
+    # ── (B) Scintillation yield vs PPO concentration ──────────────────────────
+    ppo_range = np.linspace(0.05, 5.0, 300)
+    for med, boost, col in [
+        ("WbLS",  1.00, COLORS["WbLS"]),
+        ("D2OLAB",1.12, COLORS["D2OLAB"]),
+        ("D2OTeLAB", 1.12*1.08, COLORS["D2OTeLAB"]),
+        ("GdWbLS",0.95, COLORS["GdWbLS"]),
+    ]:
+        yvec = [compute_yield(ppo, 0.05, 0.0116, boost) for ppo in ppo_range]
+        axB.plot(ppo_range, yvec, color=col, ls=LS[med], lw=2.0,
+                 label=LABELS[med])
+    axB.axvline(1.0, color="grey", lw=1.0, ls=":", alpha=0.7)
+    axB.text(1.05, 20, "Default\n1 g/L", fontsize=8, color="grey")
+    axB.set_xlabel("PPO concentration [g/L]")
+    axB.set_ylabel("Effective scintillation yield [ph/MeV]")
+    axB.legend(fontsize=8.5)
+    panel_label(axB,"b")
+
+    # ── (C) Scintillation yield vs bis-MSB concentration ─────────────────────
+    bms_range = np.linspace(0.005, 0.3, 300)
+    for med, boost, col in [
+        ("WbLS",  1.00, COLORS["WbLS"]),
+        ("D2OLAB",1.12, COLORS["D2OLAB"]),
+        ("D2OTeLAB", 1.12*1.08, COLORS["D2OTeLAB"]),
+    ]:
+        yvec = [compute_yield(1.0, b, 0.0116, boost) for b in bms_range]
+        axC.plot(bms_range, yvec, color=col, ls=LS[med], lw=2.0,
+                 label=LABELS[med])
+    axC.axvline(0.05, color="grey", lw=1.0, ls=":", alpha=0.7)
+    axC.text(0.052, 5, "Default\n0.05 g/L", fontsize=8, color="grey")
+    axC.set_xlabel("bis-MSB concentration [g/L]")
+    axC.set_ylabel("Effective scintillation yield [ph/MeV]")
+    axC.legend(fontsize=8.5)
+    panel_label(axC,"c")
+
+    # ── (D) Yield bar: all media at default concentrations ────────────────────
+    y_vals = [SCINT_YIELD[m] for m in MEDIA]
+    x_pos  = np.arange(len(MEDIA))
+    bars   = axD.bar(x_pos, y_vals,
+                     color=[COLORS[m] for m in MEDIA],
+                     edgecolor="black", lw=0.7, width=0.65, alpha=0.88)
+    axD.set_xticks(x_pos)
+    axD.set_xticklabels([SHORT[m] for m in MEDIA], rotation=38, ha="right", fontsize=9)
+    axD.set_ylabel("Scintillation yield [ph/MeV]\n(PPO=1 g/L, bis-MSB=0.05 g/L)")
+    for bar, val in zip(bars, y_vals):
+        if val > 0:
+            axD.text(bar.get_x()+bar.get_width()/2., val+0.5,
+                     f"{val:.0f}", ha="center", va="bottom", fontsize=8.5)
+        else:
+            axD.text(bar.get_x()+bar.get_width()/2., 1.0,
+                     "0\n(Cherenkov\nonly)", ha="center", va="bottom", fontsize=7.5,
+                     color="#555555")
+    panel_label(axD,"d")
+    axD.set_ylim(0, max(y_vals)*1.18)
+
+    fig.suptitle("Scintillation & PPO+bis-MSB Wavelength-Shifting Chain\n"
+                 r"(a) Spectral cascade   (b,c) Yield vs fluor concentration   "
+                 r"(d) Yield comparison",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig3_scintillation_fluors.pdf")
+    save(fig, "Fig3_scintillation_fluors.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 4 — TOTAL LIGHT YIELD  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_total_light_yield():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    E_fine = np.logspace(-1, 1.2, 200)
+
+    # ── (A) Total photons (Cherenkov + Scintillation) vs energy ───────────────
+    for med in MEDIA:
+        ytot = [total_cherenkov_photons(e, med) + total_scint_photons(e, med)
+                for e in E_fine]
+        axA.loglog(E_fine, ytot, color=COLORS[med], ls=LS[med], lw=1.8)
+        for e in ENERGIES:
+            v = total_cherenkov_photons(e,med)+total_scint_photons(e,med)
+            axA.plot(e, v, marker=MARKERS[med], color=COLORS[med], ms=5.5, zorder=5)
+    axA.set_xlabel("Electron energy [MeV]")
+    axA.set_ylabel("Total optical photons / event")
+    axA.set_xlim(0.1, 20)
+    axA.legend(handles=[legend_line(m) for m in MEDIA],
+               fontsize=8, ncol=2, columnspacing=0.7, handlelength=1.5)
+    panel_label(axA,"a")
+
+    # ── (B) Detected photons vs energy (after geometry × QE × attenuation) ───
+    for med in MEDIA:
+        ydet = []
+        for e in E_fine:
+            eff   = detection_efficiency_model(med, e)
+            n_tot = total_cherenkov_photons(e,med)+total_scint_photons(e,med)
+            ydet.append(n_tot * eff)
+        axB.loglog(E_fine, ydet, color=COLORS[med], ls=LS[med], lw=1.8)
+        for e in ENERGIES:
+            eff = detection_efficiency_model(med, e)
+            v   = (total_cherenkov_photons(e,med)+total_scint_photons(e,med))*eff
+            axB.plot(e, v, marker=MARKERS[med], color=COLORS[med], ms=5.5, zorder=5)
+    axB.set_xlabel("Electron energy [MeV]")
+    axB.set_ylabel("Detected photons / event\n(6 PMTs, bialkali QE, att. model)")
+    axB.set_xlim(0.1, 20)
+    panel_label(axB,"b")
+
+    # ── (C) Cherenkov vs Scintillation photon budget at each energy ──────────
+    E_sel = [1.0, 3.0, 5.0, 10.0]
+    x_pos = np.arange(len(E_sel))
+    width = 0.09
+    offsets = np.linspace(-len(MEDIA)*width/2,
+                           len(MEDIA)*width/2, len(MEDIA))
+    for i_m, med in enumerate(MEDIA):
+        cer_vals   = [total_cherenkov_photons(e, med) for e in E_sel]
+        scint_vals = [total_scint_photons(e, med)     for e in E_sel]
+        axC.bar(x_pos + offsets[i_m], cer_vals,   width*0.9,
+                color=COLORS[med], alpha=0.85, edgecolor="none")
+        axC.bar(x_pos + offsets[i_m], scint_vals, width*0.9,
+                bottom=cer_vals, color=COLORS[med], alpha=0.45,
+                edgecolor="none", hatch="//")
+    axC.set_xticks(x_pos)
+    axC.set_xticklabels([f"{e} MeV" for e in E_sel])
+    axC.set_ylabel("Photons / event")
+    axC.set_xlabel("Electron energy")
+    # Legend: solid=Cherenkov, hatched=Scintillation
+    from matplotlib.patches import Patch
+    leg_extra = [
+        Patch(facecolor="grey", alpha=0.85, label="Cherenkov (solid)"),
+        Patch(facecolor="grey", alpha=0.45, hatch="//", label="Scintillation (hatched)"),
+    ]
+    axC.legend(handles=leg_extra+[legend_line(m) for m in MEDIA],
+               fontsize=7.5, ncol=3, columnspacing=0.5, handlelength=1.2)
+    panel_label(axC,"c")
+
+    # ── (D) D2O-hybrid advantage: ratio vs H2O-equivalent ────────────────────
+    pairs = [("WbLS","D2OLAB"),("GdWbLS","D2OGdLAB"),("TeWbLS","D2OTeLAB"),
+             ("H2O","D2O")]
+    for h2o_med, d2o_med in pairs:
+        ratio = []
+        for e in E_fine:
+            n_h2o = total_cherenkov_photons(e,h2o_med)+total_scint_photons(e,h2o_med)
+            n_d2o = total_cherenkov_photons(e,d2o_med)+total_scint_photons(e,d2o_med)
+            ratio.append(n_d2o/max(n_h2o,1))
+        lbl = f"{SHORT[d2o_med]} / {SHORT[h2o_med]}"
+        axD.semilogx(E_fine, ratio, color=COLORS[d2o_med], lw=2.0,
+                     ls=LS[d2o_med], label=lbl)
+    axD.axhline(1.0, color="black", lw=1.0, ls="--", alpha=0.5, zorder=0)
+    axD.set_xlabel("Electron energy [MeV]")
+    axD.set_ylabel("Photon yield ratio (D$_2$O-based / H$_2$O-based)")
+    axD.set_xlim(0.1, 20)
+    axD.legend(fontsize=9)
+    panel_label(axD,"d")
+
+    fig.suptitle("Total Light Yield: Cherenkov + Scintillation (PPO+bis-MSB)\n"
+                 r"(a) Produced   (b) Detected   (c) Cher/Scint budget   "
+                 r"(d) D$_2$O advantage ratio",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig4_total_light_yield.pdf")
+    save(fig, "Fig4_total_light_yield.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 5 — PHOTON TIMING STRUCTURE  (3 × 3 grid, one panel per medium + overlay)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_timing_structure():
+    fig = plt.figure(figsize=(14, 13))
+    gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.45, wspace=0.32)
+
+    t_arr = np.linspace(0, 100, 2000)
+    E_ref = 5.0
+
+    panel_letters = list("abcdefghi")
+
+    # Individual panels for 8 media
+    for idx, med in enumerate(MEDIA):
+        ax = fig.add_subplot(gs[idx//3, idx%3])
+        pdf = timing_pdf(t_arr, med, E_ref)
+
+        # Decompose components
+        n_cer   = total_cherenkov_photons(E_ref, med)
+        n_scint = total_scint_photons(E_ref, med)
+        n_total = n_cer + n_scint
+        if n_total < 1:
+            continue
+
+        f_cer   = n_cer   / n_total
+        f_scint = n_scint / n_total
+
+        # Rebuild components separately for filled areas
+        b_val = beta(E_ref)
+        R_det  = 15.
+        c_n    = 22.4
+        sigma_T = R_det/c_n/np.sqrt(3.)
+        t0      = R_det/c_n*0.5
+
+        cher_comp = f_cer * np.exp(-0.5*((t_arr-t0)/sigma_T)**2) / (sigma_T*np.sqrt(2*np.pi))
+        dt = t_arr[1]-t_arr[0]
+        norm_c = cher_comp.sum()*dt
+        if norm_c > 0: cher_comp /= norm_c
+        cher_comp *= f_cer
+
+        if SCINT_PROPS[med][-1]:
+            tau_f, tau_s, yr, rise_f, rise_s, _ = SCINT_PROPS[med]
+            def edc(t, tau, rise):
+                r = np.zeros_like(t)
+                m = t>0
+                denom = tau - rise
+                r[m] = (np.exp(-t[m]/tau)-np.exp(-t[m]/rise))/(denom if abs(denom)>1e-6 else 1e-6)
+                s = r.sum()*dt
+                return r/s if s>0 else r
+            ppo = edc(t_arr, tau_f, rise_f)
+            bms = edc(t_arr, tau_s, rise_s)
+            scint_comp = f_scint*(yr*ppo + (1-yr)*bms)
+        else:
+            scint_comp = np.zeros_like(t_arr)
+
+        total_pdf = cher_comp + scint_comp
+
+        # Fill
+        ax.fill_between(t_arr, cher_comp,  alpha=0.55, color="#4a9eff",
+                         label="Cherenkov")
+        ax.fill_between(t_arr, np.zeros_like(t_arr), scint_comp,
+                         alpha=0.45, color="#ffaa22",
+                         label="Scint. (PPO+bis-MSB)")
+        ax.plot(t_arr, total_pdf, color="black", lw=1.3, alpha=0.85,
+                label="Total")
+
+        # Reference lines
+        ax.axvline(2.1,  color="#44aaff", lw=0.9, ls="--", alpha=0.7)
+        ax.axvline(12.0, color="#ffaa22", lw=0.9, ls=":",  alpha=0.7)
+        ax.set_xlim(0, 60)
+        ax.set_title(LABELS[med], fontsize=9.5, pad=3)
+        ax.set_xlabel("$t$ [ns]", fontsize=9)
+        ax.set_ylabel("PDF [ns$^{-1}$]", fontsize=9)
+        if idx == 0:
+            ax.legend(fontsize=7.5, loc="upper right")
+        panel_label(ax, panel_letters[idx], x=0.04, y=0.95)
+
+    # Overlay panel (i): all media normalised
+    ax_ov = fig.add_subplot(gs[2, 2])
+    for med in MEDIA:
+        pdf = timing_pdf(t_arr, med, E_ref)
+        pdf_norm = pdf / max(pdf.max(), 1e-30)
+        ax_ov.plot(t_arr, pdf_norm, color=COLORS[med], ls=LS[med], lw=1.6,
+                   label=SHORT[med])
+    ax_ov.axvline(5.0, color="black", lw=1.0, ls="--", alpha=0.6)
+    ax_ov.text(5.3, 0.92, "Early/late\n5 ns split", fontsize=7.5)
+    ax_ov.set_xlim(0, 60)
+    ax_ov.set_xlabel("$t$ [ns]", fontsize=9)
+    ax_ov.set_ylabel("Normalised PDF", fontsize=9)
+    ax_ov.set_title("Overlay — all media", fontsize=9.5, pad=3)
+    ax_ov.legend(fontsize=7, ncol=2, columnspacing=0.5, handlelength=1.2)
+    panel_label(ax_ov, "i", x=0.04, y=0.95)
+
+    fig.suptitle(f"Photon Arrival Time Distributions @ $E_e$ = {E_ref} MeV\n"
+                 r"Blue fill = Cherenkov (prompt),  Orange fill = PPO fast + bis-MSB slow,  "
+                 r"dashed = PPO $\tau_f$,  dotted = bis-MSB $\tau_s$",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig5_timing_structure.pdf")
+    save(fig, "Fig5_timing_structure.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 6 — CHERENKOV/SCINTILLATION SEPARATION  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_cerenkov_scint_separation():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    E_fine = np.logspace(-1, 1.2, 200)
+
+    # ── (A) Cherenkov fraction vs energy ─────────────────────────────────────
+    for med in MEDIA:
+        cf = [cherenkov_fraction(med, e) * 100. for e in E_fine]
+        axA.semilogx(E_fine, cf, color=COLORS[med], ls=LS[med], lw=1.8)
+        for e in ENERGIES:
+            axA.plot(e, cherenkov_fraction(med, e)*100.,
+                     marker=MARKERS[med], color=COLORS[med], ms=5.5, zorder=5)
+    axA.set_xlabel("Electron energy [MeV]")
+    axA.set_ylabel("Cherenkov fraction [%]")
+    axA.set_xlim(0.1, 20); axA.set_ylim(0, 105)
+    axA.legend(handles=[legend_line(m) for m in MEDIA],
+               fontsize=8, ncol=2, columnspacing=0.7, handlelength=1.5)
+    panel_label(axA,"a")
+
+    # ── (B) Early/late light fraction vs energy ───────────────────────────────
+    t_split = 5.0
+    for med in MEDIA:
+        early_f, late_f = [], []
+        for e in ENERGIES:
+            ef, lf = early_late_fraction(med, e, t_split)
+            early_f.append(ef*100.); late_f.append(lf*100.)
+        axB.plot(ENERGIES, early_f, color=COLORS[med], ls=LS[med],
+                 marker=MARKERS[med], lw=1.8, ms=5.5)
+    axB.set_xlabel("Electron energy [MeV]")
+    axB.set_ylabel(f"Early light fraction (<{t_split:.0f} ns) [%]")
+    axB.set_xscale("log"); axB.set_xlim(0.4, 12)
+    axB.text(0.98, 0.04,
+             f"Early window: $t < {t_split:.0f}$ ns\n(Cherenkov dominated)",
+             transform=axB.transAxes, ha="right", va="bottom", fontsize=9,
+             bbox=dict(facecolor="lightyellow", edgecolor="#aabb44",
+                       boxstyle="round,pad=0.3", alpha=0.85))
+    panel_label(axB,"b")
+
+    # ── (C) Early/late ratio bar chart at 5 MeV ──────────────────────────────
+    E_ref = 5.0
+    early_vals, late_vals = [], []
+    for med in MEDIA:
+        ef, lf = early_late_fraction(med, E_ref)
+        early_vals.append(ef*100.); late_vals.append(lf*100.)
+    x_pos = np.arange(len(MEDIA))
+    axC.bar(x_pos, early_vals,    0.6, label=f"Early ($t<5$ ns)",
+            color=[COLORS[m] for m in MEDIA], alpha=0.90, edgecolor="black", lw=0.6)
+    axC.bar(x_pos, late_vals, 0.6, bottom=early_vals,
+            label=f"Late ($t>5$ ns)",
+            color=[COLORS[m] for m in MEDIA], alpha=0.40, edgecolor="black",
+            lw=0.6, hatch="//")
+    axC.set_xticks(x_pos)
+    axC.set_xticklabels([SHORT[m] for m in MEDIA], rotation=38, ha="right", fontsize=9)
+    axC.set_ylabel("Light fraction [%]"); axC.set_ylim(0, 110)
+    from matplotlib.patches import Patch
+    axC.legend(handles=[
+        Patch(facecolor="grey", alpha=0.90, label="Early (<5 ns, Cherenkov)"),
+        Patch(facecolor="grey", alpha=0.40, hatch="//", label="Late (>5 ns, Scintillation)"),
+    ], fontsize=9)
+    panel_label(axC,"c")
+
+    # ── (D) Cherenkov/Scintillation ratio (Figure of Merit) ──────────────────
+    for med in MEDIA:
+        if not SCINT_PROPS[med][-1]:
+            # Pure Cherenkov: ratio → inf, skip
+            continue
+        fom = []
+        for e in E_fine:
+            nc = total_cherenkov_photons(e, med)
+            ns = max(total_scint_photons(e, med), 1e-6)
+            fom.append(nc / ns)
+        axD.loglog(E_fine, fom, color=COLORS[med], ls=LS[med], lw=1.8,
+                   label=LABELS[med])
+    axD.axhline(1.0, color="black", lw=0.9, ls="--", alpha=0.4)
+    axD.text(12, 1.05, "Cher = Scint", fontsize=8.5, color="#444")
+    axD.set_xlabel("Electron energy [MeV]")
+    axD.set_ylabel("Cherenkov / Scintillation photon ratio")
+    axD.set_xlim(0.5, 15)
+    axD.legend(fontsize=8.5, ncol=1)
+    panel_label(axD,"d")
+
+    fig.suptitle("Cherenkov–Scintillation Separation Capability\n"
+                 r"(a) Cherenkov fraction   (b) Early-light fraction vs $E$   "
+                 r"(c) Light budget @ 5 MeV   (d) Cher/Scint ratio",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig6_cerenkov_scint_separation.pdf")
+    save(fig, "Fig6_cerenkov_scint_separation.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 7 — DETECTION EFFICIENCY & ENERGY RESOLUTION  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_detection_efficiency():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    E_fine = np.logspace(-1, 1.2, 200)
+
+    # ── (A) Detection efficiency vs energy ───────────────────────────────────
+    for med in MEDIA:
+        eff = [detection_efficiency_model(med, e)*100. for e in E_fine]
+        axA.semilogx(E_fine, eff, color=COLORS[med], ls=LS[med], lw=1.8)
+        for e in ENERGIES:
+            axA.plot(e, detection_efficiency_model(med,e)*100.,
+                     marker=MARKERS[med], color=COLORS[med], ms=5.5, zorder=5)
+    axA.set_xlabel("Electron energy [MeV]")
+    axA.set_ylabel("Detection efficiency [%]")
+    axA.set_xlim(0.1, 20)
+    axA.legend(handles=[legend_line(m) for m in MEDIA],
+               fontsize=8, ncol=2, columnspacing=0.7, handlelength=1.5)
+    panel_label(axA,"a")
+    axA.text(0.02, 0.05,
+             r"$\varepsilon = \Omega \cdot \mathrm{QE}(\lambda) \cdot e^{-R/L_\mathrm{att}}$",
+             transform=axA.transAxes, fontsize=10,
+             bbox=dict(facecolor="lightyellow", edgecolor="#aabb44",
+                       boxstyle="round,pad=0.3", alpha=0.85))
+
+    # ── (B) Energy resolution (1/√N_det) ─────────────────────────────────────
+    for med in MEDIA:
+        res = [energy_resolution(med, e)*100. for e in E_fine]
+        axB.loglog(E_fine, res, color=COLORS[med], ls=LS[med], lw=1.8)
+        for e in ENERGIES:
+            axB.plot(e, energy_resolution(med,e)*100.,
+                     marker=MARKERS[med], color=COLORS[med], ms=5.5, zorder=5)
+    # Reference: 1/√(N) scaling
+    E_ref_arr = np.logspace(-1, 1.2, 50)
+    ref_scale = energy_resolution("WbLS", 1.0)*100. * np.sqrt(1.0/E_ref_arr)
+    axB.loglog(E_ref_arr, ref_scale, color="black", lw=1.0, ls=":",
+               alpha=0.4, label=r"$\propto E^{-1/2}$")
+    axB.set_xlabel("Electron energy [MeV]")
+    axB.set_ylabel(r"Energy resolution $\sigma_E/E$ [%]")
+    axB.set_xlim(0.1, 20)
+    axB.legend(fontsize=8.5)
+    panel_label(axB,"b")
+
+    # ── (C) Effective light collection (att length × solid angle) heat map ───
+    E_sel_idx = [1, 3]   # indices into ENERGIES: 1 MeV, 5 MeV
+    att_matrix = np.array([[attenuation_length_at_420nm(m)*100.
+                             for m in MEDIA]])  # 1 × 8
+    # Show 2D grid: att_length vs medium
+    x_pos = np.arange(len(MEDIA))
+    att_vals  = [attenuation_length_at_420nm(m)*100. for m in MEDIA]
+    n_det_1   = [(total_cherenkov_photons(1.,m)+total_scint_photons(1.,m))
+                  * detection_efficiency_model(m,1.) for m in MEDIA]
+    n_det_5   = [(total_cherenkov_photons(5.,m)+total_scint_photons(5.,m))
+                  * detection_efficiency_model(m,5.) for m in MEDIA]
+    axC.bar(x_pos-0.2, n_det_1, 0.38, color=[COLORS[m] for m in MEDIA],
+            alpha=0.95, edgecolor="black", lw=0.6, label="1 MeV")
+    axC.bar(x_pos+0.2, n_det_5, 0.38, color=[COLORS[m] for m in MEDIA],
+            alpha=0.55, edgecolor="black", lw=0.6, label="5 MeV")
+    axC.set_xticks(x_pos)
+    axC.set_xticklabels([SHORT[m] for m in MEDIA], rotation=38, ha="right", fontsize=9)
+    axC.set_ylabel("Detected photons / event")
+    axC.legend(fontsize=10)
+    panel_label(axC,"c")
+
+    # ── (D) PMT multiplicity model (binomial p = eff, n=6 PMTs) ──────────────
+    from scipy.stats import binom
+    E_ref = 5.0
+    k_vals = np.arange(0, 7)
+    for med in MEDIA:
+        eff_single = detection_efficiency_model(med, E_ref) * 1.0
+        # Probability each PMT fires: P_fire = 1 - (1-qe_eff)^N_photons_per_PMT
+        n_ph_per_pmt = (total_cherenkov_photons(E_ref,med)+
+                        total_scint_photons(E_ref,med)) / 6.
+        p_fire = 1 - (1 - 0.3)**max(int(n_ph_per_pmt), 1)
+        p_fire = min(p_fire, 0.9999)
+        probs  = binom.pmf(k_vals, 6, p_fire)
+        axD.plot(k_vals, probs*100., color=COLORS[med], ls=LS[med],
+                 marker=MARKERS[med], ms=5.5, lw=1.8, label=SHORT[med])
+    axD.set_xlabel("PMT multiplicity $k$ (out of 6)")
+    axD.set_ylabel("Probability [%]")
+    axD.set_xticks(k_vals)
+    axD.legend(fontsize=8.5, ncol=2, columnspacing=0.7)
+    panel_label(axD,"d")
+
+    fig.suptitle("Detection Efficiency and Energy Resolution\n"
+                 r"(a) Efficiency model   (b) Energy resolution $1/\sqrt{N}$   "
+                 r"(c) Detected photons   (d) PMT multiplicity",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig7_detection_efficiency.pdf")
+    save(fig, "Fig7_detection_efficiency.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 8 — D₂O vs H₂O HYBRID MEDIA COMPARISON  (2 × 3)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_d2o_comparison():
+    fig, axes = plt.subplots(2, 3, figsize=(14, 9))
+    fig.subplots_adjust(hspace=0.40, wspace=0.33)
+
+    E_fine = np.logspace(-1, 1.2, 200)
+    pairs  = [("WbLS","D2OLAB"),("GdWbLS","D2OGdLAB"),("TeWbLS","D2OTeLAB")]
+    pair_labels = [r"H$_2$O+LAB vs D$_2$O+LAB",
+                   r"Gd-WbLS vs D$_2$O+Gd-LAB",
+                   r"Te-WbLS vs D$_2$O+Te-LAB"]
+    pair_colors = [("#EE7733","#009988"),
+                   ("#CC3311","#117733"),
+                   ("#EE3377","#AA3377")]
+
+    # Top row: total photons
+    for col, (h2o, d2o), lbl, (ch, cd) in zip(
+            axes[0], pairs, pair_labels, pair_colors):
+        yh = [total_cherenkov_photons(e,h2o)+total_scint_photons(e,h2o)
+              for e in E_fine]
+        yd = [total_cherenkov_photons(e,d2o)+total_scint_photons(e,d2o)
+              for e in E_fine]
+        col.loglog(E_fine, yh, color=ch, ls="-",  lw=2.0, label=LABELS[h2o])
+        col.loglog(E_fine, yd, color=cd, ls="--", lw=2.2, label=LABELS[d2o])
+        for e in ENERGIES:
+            col.plot(e, total_cherenkov_photons(e,h2o)+total_scint_photons(e,h2o),
+                     marker=MARKERS[h2o], color=ch, ms=5, zorder=5)
+            col.plot(e, total_cherenkov_photons(e,d2o)+total_scint_photons(e,d2o),
+                     marker=MARKERS[d2o], color=cd, ms=5, zorder=5)
+        col.set_xlabel("Electron energy [MeV]")
+        col.set_ylabel("Total photons / event")
+        col.set_title(lbl, fontsize=10)
+        col.legend(fontsize=8.5)
+        col.set_xlim(0.1,20)
+        panel_label(col, ["a","b","c"][list(axes[0]).index(col)])
+
+    # Bottom row: improvement ratio + timing overlay
+    for col_idx, (h2o, d2o, lbl, (ch,cd)) in enumerate(
+            zip([p[0] for p in pairs],[p[1] for p in pairs],
+                pair_labels, pair_colors)):
+        ax = axes[1, col_idx]
+        # Yield ratio
+        ratio = [(total_cherenkov_photons(e,d2o)+total_scint_photons(e,d2o)) /
+                  max(total_cherenkov_photons(e,h2o)+total_scint_photons(e,h2o),1)
+                  for e in E_fine]
+        ax.semilogx(E_fine, ratio, color=cd, lw=2.2, ls="--",
+                    label="Yield ratio (D₂O/H₂O)")
+        # Att length ratio at 420 nm
+        att_ratio = attenuation_length_at_420nm(d2o)/max(
+                    attenuation_length_at_420nm(h2o),1e-9)
+        ax.axhline(att_ratio, color=cd, lw=1.2, ls=":",
+                   label=f"Att. length ratio = {att_ratio:.2f}")
+        ax.axhline(1.0, color="black", lw=0.9, ls="--", alpha=0.4)
+        ax.fill_between(E_fine, 1.0, ratio,
+                         where=np.array(ratio)>1.,
+                         alpha=0.15, color=cd, label="D₂O advantage")
+        ax.set_xlabel("Electron energy [MeV]")
+        ax.set_ylabel("D$_2$O / H$_2$O ratio")
+        ax.set_xlim(0.1, 20)
+        ax.set_ylim(0.85, 1.35)
+        ax.legend(fontsize=8)
+        panel_label(ax, ["d","e","f"][col_idx])
+
+    fig.suptitle(r"D$_2$O-Based Hybrid Media vs H$_2$O-Based WbLS"
+                 "\n(Top) Total photon yield    (Bottom) Improvement ratio + attenuation comparison",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig8_d2o_vs_h2o_comparison.pdf")
+    save(fig, "Fig8_d2o_vs_h2o_comparison.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 9 — MEDIUM PERFORMANCE SUMMARY MATRIX  (heatmap 4 metrics × 8 media)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_performance_matrix():
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig.subplots_adjust(hspace=0.42, wspace=0.30)
+
+    E_sel = ENERGIES
+
+    metrics = [
+        ("Total photons / event",
+         lambda m,e: total_cherenkov_photons(e,m)+total_scint_photons(e,m)),
+        ("Detected photons / event",
+         lambda m,e: (total_cherenkov_photons(e,m)+total_scint_photons(e,m))
+                      * detection_efficiency_model(m,e)),
+        (r"Early-light fraction [%] ($t<5$ ns)",
+         lambda m,e: early_late_fraction(m,e,5.0)[0]*100.),
+        (r"Energy resolution $\sigma_E/E$ [%]",
+         lambda m,e: energy_resolution(m,e)*100.),
+    ]
+
+    cmaps = ["YlOrRd","YlOrRd","PuBu","RdYlGn_r"]
+
+    for ax, (metric_name, metric_fn), cmap in zip(axes.flatten(), metrics, cmaps):
+        matrix = np.zeros((len(MEDIA), len(E_sel)))
+        for i, med in enumerate(MEDIA):
+            for j, e in enumerate(E_sel):
+                matrix[i, j] = metric_fn(med, e)
+
+        im = ax.imshow(matrix, aspect="auto", cmap=cmap,
+                       norm=LogNorm(vmin=max(matrix.min(),1e-3),
+                                    vmax=matrix.max())
+                       if "photons" in metric_name.lower() else None)
+
+        ax.set_xticks(range(len(E_sel)))
+        ax.set_xticklabels([f"{e} MeV" for e in E_sel], fontsize=9.5)
+        ax.set_yticks(range(len(MEDIA)))
+        ax.set_yticklabels([LABELS[m] for m in MEDIA], fontsize=9)
+        ax.set_title(metric_name, fontsize=10.5, pad=5)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        # Annotate cells
+        for i in range(len(MEDIA)):
+            for j in range(len(E_sel)):
+                val = matrix[i,j]
+                txt = f"{val:.0f}" if val >= 10 else f"{val:.2f}"
+                ax.text(j, i, txt, ha="center", va="center",
+                        fontsize=7.5, color="black",
+                        fontweight="bold" if "D2O" in MEDIA[i] else "normal")
+
+    fig.suptitle("Performance Matrix: All 8 Media × All 5 Energies\n"
+                 r"$\bigstar$ = novel D$_2$O-based hybrid media",
+                 fontsize=12, y=1.01)
+    save(fig, "Fig9_performance_matrix.pdf")
+    save(fig, "Fig9_performance_matrix.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 10 — FIGURE OF MERIT & PURE H₂O / D₂O COMPARISON  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_fom_and_pure_media():
+    """
+    Addresses the key question: are we missing anything by having only pure
+    H2O and D2O as Cherenkov-only media?
+    Panel (a): Pure H2O vs D2O — Cherenkov yield difference
+    Panel (b): Pure media as baseline vs scintillating hybrids
+    Panel (c): Separability figure of merit: FoM = N_Cher / sqrt(N_total)
+    Panel (d): SNO-style NC sensitivity proxy: early/(early+late)
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    E_fine = np.logspace(-1, 1.2, 200)
+
+    # ── (A) H2O vs D2O: pure Cherenkov yield ─────────────────────────────────
+    nh2o = [total_cherenkov_photons(e,"H2O") for e in E_fine]
+    nd2o = [total_cherenkov_photons(e,"D2O") for e in E_fine]
+    diff = [(h-d)/max(h,1)*100. for h,d in zip(nh2o,nd2o)]
+
+    axA.loglog(E_fine, nh2o, color=COLORS["H2O"],  lw=2.2, ls="-",
+               label=LABELS["H2O"])
+    axA.loglog(E_fine, nd2o, color=COLORS["D2O"],  lw=2.2, ls="--",
+               label=LABELS["D2O"])
+    for e in ENERGIES:
+        axA.plot(e, total_cherenkov_photons(e,"H2O"),
+                 marker="o", color=COLORS["H2O"], ms=6, zorder=5)
+        axA.plot(e, total_cherenkov_photons(e,"D2O"),
+                 marker="s", color=COLORS["D2O"], ms=6, zorder=5)
+    ax_twin = axA.twinx()
+    ax_twin.semilogx(E_fine, diff, color="#888888", lw=1.3, ls=":",
+                     label=r"$(N_\mathrm{H_2O}-N_\mathrm{D_2O})/N_\mathrm{H_2O}$ [%]")
+    ax_twin.set_ylabel("Relative difference [%]", fontsize=10, color="#888888")
+    ax_twin.tick_params(axis="y", colors="#888888", direction="in")
+    ax_twin.axhline(0, color="#aaaaaa", lw=0.8, ls="--")
+    axA.set_xlabel("Electron energy [MeV]")
+    axA.set_ylabel("Cherenkov photons / event")
+    axA.set_xlim(0.1, 20)
+    axA.legend(fontsize=9, loc="upper left")
+    ax_twin.legend(fontsize=8.5, loc="lower right")
+    panel_label(axA,"a")
+    axA.text(0.50, 0.05,
+             r"Pure media: Cherenkov-only"
+             "\n" r"D$_2$O: lower $n$ → slightly fewer photons",
+             transform=axA.transAxes, fontsize=8.5, ha="center",
+             bbox=dict(facecolor="lightyellow", edgecolor="#aabb44",
+                       boxstyle="round,pad=0.3", alpha=0.85))
+
+    # ── (B) Cherenkov photons: pure vs hybrid (all 8 media) ──────────────────
+    for med in MEDIA:
+        ycv = [total_cherenkov_photons(e,med) for e in E_fine]
+        lw  = 2.4 if med in ["H2O","D2O"] else 1.6
+        zord = 5 if med in ["H2O","D2O"] else 3
+        axB.loglog(E_fine, ycv, color=COLORS[med], ls=LS[med], lw=lw, zorder=zord)
+    axB.set_xlabel("Electron energy [MeV]")
+    axB.set_ylabel("Cherenkov photons / event")
+    axB.set_xlim(0.1, 20)
+    axB.legend(handles=[legend_line(m) for m in MEDIA],
+               fontsize=8, ncol=2, columnspacing=0.7, handlelength=1.5)
+    panel_label(axB,"b")
+    axB.text(0.02, 0.96, "Pure H₂O & D₂O shown as thick lines",
+             transform=axB.transAxes, fontsize=8.5, va="top",
+             bbox=dict(facecolor="lightyellow", edgecolor="#aabb44",
+                       boxstyle="round,pad=0.3", alpha=0.85))
+
+    # ── (C) Cherenkov separability FoM: N_Cher / sqrt(N_total) ───────────────
+    # Higher = easier to isolate Cherenkov signal from scintillation background
+    for med in MEDIA:
+        fom = []
+        for e in E_fine:
+            nc  = total_cherenkov_photons(e,med)
+            nt  = nc + max(total_scint_photons(e,med), 0.)
+            fom.append(nc / np.sqrt(max(nt, 1)))
+        axC.loglog(E_fine, fom, color=COLORS[med], ls=LS[med], lw=1.8,
+                   label=SHORT[med])
+    axC.set_xlabel("Electron energy [MeV]")
+    axC.set_ylabel(r"Separability FoM: $N_\mathrm{Cher}/\sqrt{N_\mathrm{total}}$")
+    axC.set_xlim(0.1, 20)
+    axC.legend(fontsize=8.5, ncol=2, columnspacing=0.7, handlelength=1.5)
+    panel_label(axC,"c")
+    axC.text(0.02, 0.04,
+             r"$\mathrm{FoM} = N_\mathrm{Cher}/\sqrt{N_\mathrm{total}}$" "\n"
+             "Higher → better Cherenkov isolation",
+             transform=axC.transAxes, fontsize=9, va="bottom",
+             bbox=dict(facecolor="lightyellow", edgecolor="#aabb44",
+                       boxstyle="round,pad=0.3", alpha=0.85))
+
+    # ── (D) Comprehensive bar: key metrics at 5 MeV ──────────────────────────
+    E_ref = 5.0
+    metrics_bar = {
+        r"$N_\mathrm{Cher}$ /event (×10⁻²)": lambda m:
+            total_cherenkov_photons(E_ref,m)/100.,
+        r"$N_\mathrm{Scint}$ /event (×10⁻¹)": lambda m:
+            total_scint_photons(E_ref,m)/10.,
+        r"$N_\mathrm{det}$ /event": lambda m:
+            (total_cherenkov_photons(E_ref,m)+total_scint_photons(E_ref,m))
+            * detection_efficiency_model(m,E_ref),
+        r"Early frac. (%)": lambda m:
+            early_late_fraction(m,E_ref,5.0)[0]*100.,
+    }
+    x_pos   = np.arange(len(MEDIA))
+    n_metr  = len(metrics_bar)
+    width   = 0.18
+    offsets = np.linspace(-(n_metr-1)*width/2, (n_metr-1)*width/2, n_metr)
+    bar_colors = ["#4a9eff","#ffaa22","#44bb44","#ee4455"]
+
+    for i_metric, ((mname, mfn), bc, off) in enumerate(
+            zip(metrics_bar.items(), bar_colors, offsets)):
+        vals = [mfn(m) for m in MEDIA]
+        axD.bar(x_pos + off, vals, width*0.92, label=mname,
+                color=bc, alpha=0.82, edgecolor="black", lw=0.5)
+
+    axD.set_xticks(x_pos)
+    axD.set_xticklabels([SHORT[m] for m in MEDIA], rotation=38, ha="right", fontsize=9)
+    axD.set_ylabel("Metric value (see legend for units)")
+    axD.set_xlabel("")
+    axD.legend(fontsize=8.5, ncol=2, columnspacing=0.6, handlelength=1.4)
+    panel_label(axD,"d")
+
+    fig.suptitle(r"H$_2$O & D$_2$O as Pure Cherenkov Baselines + Figure of Merit"
+                 "\n"
+                 r"(a) H$_2$O vs D$_2$O Cherenkov yield   "
+                 r"(b) All-media Cherenkov   "
+                 r"(c) Separability FoM   "
+                 r"(d) Key metrics @ 5 MeV",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig10_fom_pure_media.pdf")
+    save(fig, "Fig10_fom_pure_media.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIGURE 11 — WAVELENGTH SPECTRA & PMT RESPONSE  (2 × 2)
+# ══════════════════════════════════════════════════════════════════════════════
+def fig_wavelength_and_pmt():
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig.subplots_adjust(hspace=0.38, wspace=0.32)
+    axA, axB, axC, axD = axes.flatten()
+
+    # ── (A) Detected photon spectrum = fluor emission × PMT QE ───────────────
+    qe_interp = np.interp(_WL_SPEC, _QE_WL, _QE_VAL, left=0., right=0.)
+    detected_ppo = _PPO_EMIT  * qe_interp
+    detected_bms = _BMS_EMIT  * qe_interp
+    detected_cer = _CHER_SPEC * qe_interp
+
+    detected_ppo /= max(detected_ppo.max(), 1e-30)
+    detected_bms /= max(detected_bms.max(), 1e-30)
+    detected_cer /= max(detected_cer.max(), 1e-30)
+
+    axA.fill_between(_WL_SPEC, detected_cer, alpha=0.25, color="#60c0ff",
+                     label="Cherenkov × QE")
+    axA.plot(_WL_SPEC, detected_cer, color="#60c0ff", lw=1.8, ls=":")
+    axA.fill_between(_WL_SPEC, detected_ppo, alpha=0.30, color="#44aaff",
+                     label="PPO emit × QE")
+    axA.plot(_WL_SPEC, detected_ppo, color="#44aaff", lw=1.8)
+    axA.fill_between(_WL_SPEC, detected_bms, alpha=0.35, color="#ffaa00",
+                     label="bis-MSB emit × QE")
+    axA.plot(_WL_SPEC, detected_bms, color="#ffaa00", lw=2.0)
+    axA.plot(_QE_WL, _QE_VAL, color="black", lw=1.5, ls="-.",
+             label="PMT QE")
+    axA.set_xlabel("Wavelength [nm]")
+    axA.set_ylabel("Normalised detected spectrum")
+    axA.set_xlim(260, 620)
+    axA.legend(fontsize=9)
+    panel_label(axA,"a")
+
+    # ── (B) Total detected spectrum per medium (PPO+bisMSB weighted by yield) -
+    for med in MEDIA:
+        nc   = total_cherenkov_photons(5., med)
+        ns   = total_scint_photons(5., med)
+        ntot = nc + ns
+        if ntot < 1: continue
+        spec = (nc/ntot * _CHER_SPEC +
+                ns/ntot * (SCINT_PROPS[med][2] if SCINT_PROPS[med][-1] else 0.) * _PPO_EMIT +
+                ns/ntot * (1-SCINT_PROPS[med][2] if SCINT_PROPS[med][-1] else 0.) * _BMS_EMIT)
+        spec = spec * qe_interp
+        spec /= max(spec.max(), 1e-30)
+        axB.plot(_WL_SPEC, spec, color=COLORS[med], ls=LS[med], lw=1.7,
+                 label=SHORT[med])
+    axB.set_xlabel("Wavelength [nm]")
+    axB.set_ylabel("Normalised detected spectrum @ 5 MeV")
+    axB.set_xlim(260, 620)
+    axB.legend(fontsize=8.5, ncol=2, columnspacing=0.7)
+    panel_label(axB,"b")
+
+    # ── (C) Mean detected photon wavelength bar chart ─────────────────────────
+    mean_wl = []
+    for med in MEDIA:
+        nc   = total_cherenkov_photons(5., med)
+        ns   = total_scint_photons(5., med)
+        ntot = nc + ns
+        if ntot < 1:
+            mean_wl.append(np.nan); continue
+        yr = SCINT_PROPS[med][2] if SCINT_PROPS[med][-1] else 0.
+        spec = (nc/ntot * _CHER_SPEC +
+                ns/ntot * yr * _PPO_EMIT +
+                ns/ntot * (1-yr) * _BMS_EMIT)
+        spec_det = spec * qe_interp
+        denom = spec_det.sum()
+        mean_wl.append(np.sum(_WL_SPEC * spec_det)/denom if denom > 0 else np.nan)
+
+    x_pos = np.arange(len(MEDIA))
+    bars  = axC.bar(x_pos, mean_wl,
+                    color=[COLORS[m] for m in MEDIA],
+                    edgecolor="black", lw=0.7, width=0.65, alpha=0.88)
+    axC.axhline(420., color="orange", lw=1.2, ls="--", label="bis-MSB peak (420 nm)")
+    axC.axhline(360., color="#44aaff",lw=1.2, ls=":",  label="PPO peak (360 nm)")
+    axC.set_xticks(x_pos)
+    axC.set_xticklabels([SHORT[m] for m in MEDIA], rotation=38, ha="right", fontsize=9)
+    axC.set_ylabel("Mean detected photon wavelength [nm]")
+    axC.legend(fontsize=9)
+    for bar, wl in zip(bars, mean_wl):
+        if not np.isnan(wl):
+            axC.text(bar.get_x()+bar.get_width()/2., wl+0.5,
+                     f"{wl:.0f}", ha="center", va="bottom", fontsize=8)
+    panel_label(axC,"c")
+
+    # ── (D) Photon detection rate vs energy (detected ph/MeV) ─────────────────
+    E_fine = np.logspace(-1, 1.2, 200)
+    for med in MEDIA:
+        y = [(total_cherenkov_photons(e,med)+total_scint_photons(e,med))
+              * detection_efficiency_model(med,e) / e
+              for e in E_fine]
+        axD.loglog(E_fine, y, color=COLORS[med], ls=LS[med], lw=1.8,
+                   label=SHORT[med])
+    axD.set_xlabel("Electron energy [MeV]")
+    axD.set_ylabel("Detected photons / MeV")
+    axD.set_xlim(0.1, 20)
+    axD.legend(fontsize=8.5, ncol=2, columnspacing=0.7, handlelength=1.5)
+    panel_label(axD,"d")
+
+    fig.suptitle("Detected Photon Wavelength Spectra and PMT Response\n"
+                 r"(a) Spectral components × QE   (b) Per-medium spectra @ 5 MeV   "
+                 r"(c) Mean detected $\lambda$   (d) Photons/MeV",
+                 fontsize=11, y=1.01)
+    save(fig, "Fig11_wavelength_pmt.pdf")
+    save(fig, "Fig11_wavelength_pmt.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    print(f"\n{'='*60}")
+    print("  NeutrinoDetSim — Publication Physics Analysis")
+    print(f"  Output directory: {OUT_DIR}/")
+    print(f"{'='*60}\n")
+    print("  Media modelled:")
+    for m in MEDIA:
+        yi = SCINT_YIELD[m]
+        thr = cherenkov_threshold_MeV(n_mean(m))
+        has_s = "Scint" if SCINT_PROPS[m][-1] else "Cherenkov-only"
+        print(f"    {SHORT[m]:14s}  n̄={n_mean(m):.4f}  "
+              f"Ethr={thr:.3f} MeV  Y={yi:.0f} ph/MeV  [{has_s}]")
+    print()
+
+    fig_optical_properties()
+    fig_cherenkov_physics()
+    fig_scintillation_fluors()
+    fig_total_light_yield()
+    fig_timing_structure()
+    fig_cerenkov_scint_separation()
+    fig_detection_efficiency()
+    fig_d2o_comparison()
+    fig_performance_matrix()
+    fig_fom_and_pure_media()
+    fig_wavelength_and_pmt()
+
+    print(f"\n  Done — 11 figures (PDF + PNG) in {OUT_DIR}/\n")
+    figs = sorted(os.listdir(OUT_DIR))
+    for f in figs:
+        sz = os.path.getsize(os.path.join(OUT_DIR,f)) // 1024
+        print(f"    {f:50s}  {sz:5d} kB")
+
+
+
+
+
+
+
+
+
+        

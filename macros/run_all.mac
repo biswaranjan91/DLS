@@ -1,0 +1,217 @@
+# ============================================================
+# run_all.mac — All 40 configs inline (no sub-macros)
+# Usage: ./build/NeutrinoDetSim macros/run_all.mac
+# ============================================================
+
+/run/verbose 0
+/event/verbose 0
+/tracking/verbose 0
+/gun/particle e-
+
+# ── H2O ───────────────────────────────────────────────
+/det/medium H2O
+/run/initialize
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium H2O
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium H2O
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium H2O
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium H2O
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── D2O ───────────────────────────────────────────────
+/det/medium D2O
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium D2O
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium D2O
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium D2O
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium D2O
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── WbLS ──────────────────────────────────────────────
+/det/medium WbLS
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium WbLS
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium WbLS
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium WbLS
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium WbLS
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── GdWbLS ────────────────────────────────────────────
+/det/medium GdWbLS
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium GdWbLS
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium GdWbLS
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium GdWbLS
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium GdWbLS
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── TeWbLS ────────────────────────────────────────────
+/det/medium TeWbLS
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium TeWbLS
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium TeWbLS
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium TeWbLS
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium TeWbLS
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── D2OLAB ────────────────────────────────────────────
+/det/medium D2OLAB
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium D2OLAB
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OLAB
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OLAB
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OLAB
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── D2OGdLAB ──────────────────────────────────────────
+/det/medium D2OGdLAB
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium D2OGdLAB
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OGdLAB
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OGdLAB
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OGdLAB
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000
+
+# ── D2OTeLAB ──────────────────────────────────────────
+/det/medium D2OTeLAB
+/run/reinitializeGeometry
+/gun/energy 0.5 MeV
+/run/beamOn 1000
+
+/det/medium D2OTeLAB
+/run/reinitializeGeometry
+/gun/energy 1.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OTeLAB
+/run/reinitializeGeometry
+/gun/energy 3.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OTeLAB
+/run/reinitializeGeometry
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+/det/medium D2OTeLAB
+/run/reinitializeGeometry
+/gun/energy 10.0 MeV
+/run/beamOn 1000

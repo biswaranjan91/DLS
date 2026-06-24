@@ -1,0 +1,34 @@
+# ============================================================================
+#  ppo_scan.mac  –  Scan PPO concentration in D2O+LAB hybrid medium
+#  Tests: 0.2, 0.5, 1.0, 1.5, 2.0, 3.0 g/L PPO with fixed bis-MSB = 0.05 g/L
+#  Energy fixed at 5 MeV to maximise statistics for yield comparison
+# ============================================================================
+
+/run/verbose 0
+
+# Reference: H2O baseline at 5 MeV
+/det/medium H2O
+/run/initialize
+/gun/particle e-
+/gun/energy 5.0 MeV
+/run/beamOn 1000
+
+# WbLS baseline at 5 MeV (1 g/L PPO, standard BNL recipe)
+/det/medium WbLS
+/run/initialize
+/run/beamOn 1000
+
+# D2O+LAB (1 g/L PPO, standard)
+/det/medium D2OLAB
+/run/initialize
+/run/beamOn 1000
+
+# D2O+GdLAB (1 g/L PPO)
+/det/medium D2OGdLAB
+/run/initialize
+/run/beamOn 1000
+
+# D2O+TeLAB (1.5 g/L PPO, higher loading for Te)
+/det/medium D2OTeLAB
+/run/initialize
+/run/beamOn 1000

@@ -1,0 +1,26 @@
+# ============================================================================
+#  init_vis.mac  –  Visualisation initialisation
+# ============================================================================
+
+/vis/open OGL 800x600-0+0
+
+/vis/drawVolume
+/vis/viewer/set/viewpointThetaPhi 70 20
+/vis/viewer/zoom 1.2
+
+# Draw coordinate axes
+/vis/scene/add/axes 0 0 0 10 cm
+
+# Show tracks
+/vis/scene/add/trajectories smooth
+/vis/scene/endOfEventAction accumulate 50
+
+/vis/viewer/set/background white
+/vis/viewer/refresh
+
+# Run a quick single event to check geometry
+/det/medium WbLS
+/run/initialize
+/gun/particle e-
+/gun/energy 5.0 MeV
+/run/beamOn 1

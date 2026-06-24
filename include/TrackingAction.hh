@@ -1,0 +1,26 @@
+#ifndef TRACKINGACTION_HH
+#define TRACKINGACTION_HH
+
+#include "G4UserTrackingAction.hh"
+#include "globals.hh"
+
+class RunAction;
+
+// ============================================================================
+//  TrackingAction
+//  Reads the primary electron energy from the first track and passes it
+//  to RunAction so summary CSVs carry the correct energy label.
+// ============================================================================
+class TrackingAction : public G4UserTrackingAction
+{
+public:
+  TrackingAction(RunAction* ra);
+  void PreUserTrackingAction (const G4Track*) override;
+  void PostUserTrackingAction(const G4Track*) override {}
+
+private:
+  RunAction* fRunAction;
+  //  G4bool     fFirstTrack = true;
+};
+
+#endif

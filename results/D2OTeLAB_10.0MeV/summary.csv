@@ -1,0 +1,16 @@
+# NeutrinoDetSim run summary
+medium,D2OTeLAB
+primary_energy_MeV,10.000
+n_events,1000
+total_produced,6054469
+scint_produced,3995964
+cerenkov_produced,2058505
+total_detected,277825
+scint_detected,8584
+cerenkov_detected,62046
+wls_detected,207195
+detection_efficiency,0.045888
+scint_fraction_produced,0.660002
+cerenkov_fraction_produced,0.339998
+mean_produced_per_event,6054.469000
+mean_detected_per_event,277.825000
